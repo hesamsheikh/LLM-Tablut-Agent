@@ -18,6 +18,10 @@ class Player(Enum):
     BLACK = "Black"
     WHITE = "White"
 
+class PlayerType(Enum):
+    GUI = "gui"
+    HEURISTIC = "heuristic" 
+    LLM = "llm"
 
 class GameVisualizer:
     """Class to handle game visualization separate from game logic"""
@@ -104,9 +108,15 @@ class GameVisualizer:
 
         pygame.display.flip()
 
-    def run(self, game_state):
-        """Main game loop"""
-        # Initialize visualization if pygame is available
+
+    def run(self, game_state, white_player_type=PlayerType.GUI, black_player_type=PlayerType.GUI):
+        """Main game loop with flexible GUI control for each player
+        
+        Args:
+            game_state: The TablutGame instance
+            white_gui: PlayerType for white player
+            black_gui: PlayerType for black player
+        """
         pygame.init()
         WINDOW_SIZE = self.BOARD_SIZE
         screen = pygame.display.set_mode((WINDOW_SIZE, WINDOW_SIZE))
@@ -118,20 +128,26 @@ class GameVisualizer:
         valid_moves = []
         game_over = False
         
-        while running:
+        while running and not game_over:
+            current_player_gui = (white_player_type == PlayerType.GUI if game_state.current_player == Player.WHITE 
+                                else black_player_type == PlayerType.GUI)
+            
+            # Notify game that a programmatic move is needed
+            if not current_player_gui:
+                game_state.notify_move_needed()
+                
             # Handle pygame events
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     running = False
                     
-                if event.type == pygame.MOUSEBUTTONDOWN and not game_over:
-                    # Get board coordinates from mouse position
+                # Only process mouse events if current player uses GUI
+                if event.type == pygame.MOUSEBUTTONDOWN and not game_over and current_player_gui:
                     mouse_x, mouse_y = pygame.mouse.get_pos()
                     col = mouse_x // (WINDOW_SIZE // 9)
                     row = mouse_y // (WINDOW_SIZE // 9) 
                     
                     if selected_piece is None:
-                        # Select piece if it belongs to current player
                         piece = game_state.board[row][col]
                         if piece != Piece.EMPTY:
                             is_white_turn = (game_state.current_player == Player.WHITE)
@@ -140,24 +156,18 @@ class GameVisualizer:
                                 selected_piece = (row, col)
                                 valid_moves = game_state.get_valid_moves(row, col)
                     else:
-                        # Try to move selected piece
                         if (row, col) in valid_moves:
                             game_state.move_piece(selected_piece[0], selected_piece[1], row, col)
-                            
-                            # Check win conditions
                             if game_state.is_game_over():
-                                winner = game_state.get_winner()
-                                if winner == Player.WHITE:
-                                    print("Game Over! White wins - King has escaped!")
-                                else:
-                                    print("Game Over! Black wins - King has been captured!")
                                 game_over = True
-                                running = False
-                                
                         selected_piece = None
                         valid_moves = []
             
-            self.draw_game_state(screen, game_state, selected_piece, valid_moves)
+            # Update display
+            self.draw_game_state(screen, game_state, 
+                               selected_piece if current_player_gui else None,
+                               valid_moves if current_player_gui else None)
+            pygame.display.flip()
             clock.tick(60)
 
         pygame.quit()

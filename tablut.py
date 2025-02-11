@@ -2,8 +2,8 @@ import pygame
 import json
 from datetime import datetime
 from typing import List, Tuple, Optional, Dict, Set
-from utils import Piece, Player, GameVisualizer, ArchiveManager
-
+from utils import Piece, Player, GameVisualizer, ArchiveManager, PlayerType
+import asyncio
 
 class TablutGame:
     # Define board positions as class constants
@@ -40,7 +40,29 @@ class TablutGame:
         self.archive_manager = ArchiveManager()
         # Add initial game state to archive
         self.archive_manager.add_game_state(self.board, None, None, None)
-
+        self.move_callback = None  # to handle non-gui player (heuristic, llm, etc.)
+        
+    def set_move_callback(self, callback, player: Player):
+        """Set a callback function to be called when it's the specified player's turn
+        
+        Args:
+            callback: The callback function to call for moves
+            player: Which player (BLACK/WHITE) this callback is for
+        """
+        if player == Player.BLACK:
+            self.black_move_callback = callback
+        else:
+            self.white_move_callback = callback
+        
+    def notify_move_needed(self):
+        """Notify when a programmatic move is needed"""
+        log = None
+        if self.current_player == Player.BLACK and hasattr(self, 'black_move_callback'):
+            log = self.black_move_callback(self)
+        elif self.current_player == Player.WHITE and hasattr(self, 'white_move_callback'):
+            log = self.white_move_callback(self)
+        if log:
+            print(log)
 
     def replay_game(self, filename: str):
         """Load and replay a game from a JSON file"""
@@ -223,11 +245,18 @@ class TablutGame:
         else:
             self.board[row][col] = Piece.EMPTY
 
+    def move_piece(self, from_row: int, from_col: int, to_row: int, to_col: int) -> Tuple[bool, Optional[str]]:
+        """Move a piece on the board and return (success, error_message)"""
+        # Check if moving piece belongs to current player
+        piece = self.board[from_row][from_col]
+        if piece == Piece.EMPTY:
+            return False, f"{self.current_player.value} tried to move an empty space"
+        if self.current_player == Player.WHITE and piece not in [Piece.WHITE, Piece.KING]:
+            return False, f"{self.current_player.value} tried to move opponent's piece"
+        if self.current_player == Player.BLACK and piece != Piece.BLACK:
+            return False, f"{self.current_player.value} tried to move opponent's piece"
 
-    def move_piece(self, from_row: int, from_col: int, to_row: int, to_col: int) -> bool:
-        """Move a piece on the board and return True if successful"""
         if self._is_valid_move(from_row, from_col, to_row, to_col):
-            piece = self.board[from_row][from_col]
             moving_player = self.current_player
             self.board[to_row][to_col] = piece
             self._clear_tile(from_row, from_col)
@@ -248,7 +277,7 @@ class TablutGame:
             if not self._has_any_valid_moves(self.current_player):
                 # Current player loses if they have no valid moves
                 self.current_player = Player.BLACK if self.current_player == Player.WHITE else Player.WHITE
-                return True
+                return True, None
             
             # Check if game is over and save archive if it is
             if self.is_game_over():
@@ -259,15 +288,16 @@ class TablutGame:
                 reason = ""
                 if self.is_king_captured():
                     reason = "King captured"
-                elif self.is_king_escaped():
+                elif self.has_king_escaped():
                     reason = "King escaped"
                 elif not self._has_any_valid_moves(self.current_player):
                     reason = f"{self.current_player.value} has no valid moves"
                 
                 self.archive_manager.save_game(winner, is_draw, description=reason)
                 
-            return True
-        return False
+            return True, None
+
+        return False, f"{self.current_player.value} attempted invalid move from ({from_row},{from_col}) to ({to_row},{to_col})"
     
     def check_captures(self, row: int, col: int, moving_player):
         """Check and execute captures around the given position"""
@@ -406,11 +436,11 @@ class TablutGame:
         visualizer.draw_game_state(screen, self, selected_piece, valid_moves)
 
 
-
 if __name__ == "__main__":
     game = TablutGame()
     visualizer = GameVisualizer()
-    visualizer.run(game)
+    visualizer.run(game, white_player_type=PlayerType.GUI, black_player_type=PlayerType.GUI)
+            
     ## Replay specific game
     # game_file = "Black_9_20250204_191818.json"
     # print(f"Replaying game: {game_file}")
