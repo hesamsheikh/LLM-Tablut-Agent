@@ -178,6 +178,7 @@ class TablutGame:
 
             
     def get_valid_moves(self, row: int, col: int) -> List[Tuple[int, int]]:
+        """Get all valid moves for a piece at (row, col)"""
         if self.board[row][col] == Piece.EMPTY:
             return []
             
@@ -229,7 +230,6 @@ class TablutGame:
                 # if black piece left camp, it cannot return to it
                 if piece == Piece.BLACK and (from_row,from_col) not in self.CAMP_TILES and self.board[row][from_col] == Piece.CAMP:
                     return False
-
 
         return True
 
@@ -413,7 +413,6 @@ class TablutGame:
         current_state = self._board_to_string()
         if self.state_count.get(current_state, 0) >= 3:
             return True
-            
         return self.is_king_captured() or self.has_king_escaped()
 
     def get_winner(self):
@@ -434,6 +433,8 @@ class TablutGame:
         """Draw the current game state on the screen"""
         visualizer = GameVisualizer()
         visualizer.draw_game_state(screen, self, selected_piece, valid_moves)
+
+    
 
 
 if __name__ == "__main__":
