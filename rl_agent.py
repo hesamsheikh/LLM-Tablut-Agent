@@ -6,7 +6,7 @@ import random
 from collections import deque
 import copy
 from typing import Tuple, List, Dict, Any, Optional
-from utils import Piece, Player, PlayerType
+from utils import Piece, Player, PlayerType, GameVisualizer
 from tablut import TablutGame
 
 class DQN(nn.Module):

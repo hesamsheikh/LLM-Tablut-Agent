@@ -189,21 +189,31 @@ class ArchiveManager:
             "board": board_state,
         }
         self.game_states.append(state)
-
     def save_game(self, winner: Optional[Player], is_draw: bool = False, description: str = ""):
         """Save the complete game to a JSON file"""
+        # Convert any numpy int64 values to regular Python ints
+        game_states = []
+        for state in self.game_states:
+            converted_state = {
+                "player": state["player"],
+                "move_from": tuple(int(x) if x is not None else None for x in state["move_from"]) if state["move_from"] else None,
+                "move_to": tuple(int(x) if x is not None else None for x in state["move_to"]) if state["move_to"] else None,
+                "board": [[piece for piece in row] for row in state["board"]]
+            }
+            game_states.append(converted_state)
+
         game_data = {
             "winner": winner.value if winner else "Draw" if is_draw else None,
             "description": description,
-            "total_moves": len(self.game_states),
+            "total_moves": int(len(self.game_states)),
             "game_date": datetime.now().isoformat(),
-            "game_states": self.game_states,
+            "game_states": game_states
         }
 
         # Create filename with game info
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         result = "draw" if is_draw else f"{winner.value}" if winner else "incomplete"
-        moves = len(self.game_states)
+        moves = int(len(self.game_states))
         filename = f"{result}_{moves}_{timestamp}.json"
 
         # Create logs directory if it doesn't exist
