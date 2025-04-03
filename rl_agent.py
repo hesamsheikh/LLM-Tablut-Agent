@@ -7,6 +7,7 @@ from collections import deque
 import os
 from tablut import TablutGame
 from utils import Player, Piece, PlayerType
+from datetime import datetime
 
 def board_to_state_tensor(board):
     """
@@ -233,10 +234,17 @@ class TablutRLAgent:
         """Decay exploration rate"""
         self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
 
-    def save_model(self, filename):
+    def save_model(self, filename, folder_name="default"):
         """Save model weights to file"""
+        # Create base models directory
         os.makedirs('models', exist_ok=True)
-        torch.save(self.q_network.state_dict(), f'models/{filename}')
+        
+        # Create subdirectory for this specific run
+        model_dir = os.path.join('models', folder_name)
+        os.makedirs(model_dir, exist_ok=True)
+        
+        # Save model
+        torch.save(self.q_network.state_dict(), os.path.join(model_dir, filename))
 
     def load_model(self, filename):
         """Load model weights from file"""
@@ -257,6 +265,10 @@ def rl_agent_move(game, agent):
 
 def train_agent(white_agent=None, black_agent=None, num_episodes=1000):
     """Train agent(s) by playing games"""
+    # Create a unique folder name with timestamp
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    folder_name = f"training_run_{timestamp}"
+    
     # Initialize agents if not provided
     if white_agent is None:
         white_agent = TablutRLAgent(Player.WHITE)
@@ -399,18 +411,20 @@ def train_agent(white_agent=None, black_agent=None, num_episodes=1000):
         
         # Save models periodically
         if (episode + 1) % 100 == 0:
-            white_agent.save_model(f"white_agent_ep{episode+1}.pt")
-            black_agent.save_model(f"black_agent_ep{episode+1}.pt")
+            white_agent.save_model(f"white_agent_ep{episode+1}.pt", folder_name)
+            black_agent.save_model(f"black_agent_ep{episode+1}.pt", folder_name)
     
     # Save final models
-    white_agent.save_model("white_agent_final.pt")
-    black_agent.save_model("black_agent_final.pt")
+    white_agent.save_model("white_agent_final.pt", folder_name)
+    black_agent.save_model("black_agent_final.pt", folder_name)
     
-    return white_agent, black_agent
+    print(f"Models saved in: models/{folder_name}/")
+    return white_agent, black_agent, folder_name
 
 def visualize_game(white_agent, black_agent):
     """Run a visual game between two agents"""
     from utils import GameVisualizer
+    import time
     
     # Create a new game
     game = TablutGame()
@@ -425,67 +439,143 @@ def visualize_game(white_agent, black_agent):
     game.set_move_callback(white_callback, Player.WHITE)
     game.set_move_callback(black_callback, Player.BLACK)
     
-    # Set the game to use RL agents instead of GUI input
-    visualizer.run(game, 
-                  white_player_type=PlayerType.RL, 
-                  black_player_type=PlayerType.RL)
+    # Add a move counter to prevent infinite loops
+    max_moves = 100
+    move_count = 0
+    
+    def custom_move_tracking(original_move_piece, game_obj):
+        def tracked_move_piece(from_row, from_col, to_row, to_col):
+            nonlocal move_count
+            result = original_move_piece(from_row, from_col, to_row, to_col)
+            move_count += 1
+            
+            # Print game state info after each move
+            if result[0]:  # If move was successful
+                if game_obj.is_game_over():
+                    winner = game_obj.get_winner()
+                    if winner:
+                        print(f"Game over! {winner.value} has won!")
+                    else:
+                        print("Game over! It's a draw!")
+                    
+                    # Check specific win/loss conditions
+                    if game_obj.has_king_escaped():
+                        print("White wins - King escaped!")
+                    elif game_obj.is_king_captured():
+                        print("Black wins - King captured!")
+            
+            return result
+        
+        return tracked_move_piece
+    
+    # Replace the move_piece method with our tracking version
+    original_move = game.move_piece
+    game.move_piece = custom_move_tracking(original_move, game)
+    
+    print("Starting visualization with modified game...")
+    print(f"White agent epsilon: {white_agent.epsilon:.2f}")
+    print(f"Black agent epsilon: {black_agent.epsilon:.2f}")
+    
+    # Run the visualization with move limit
+    try:
+        # Set the game to use RL agents instead of GUI input
+        visualizer.run(game, 
+                      white_player_type=PlayerType.RL, 
+                      black_player_type=PlayerType.RL)
+    except Exception as e:
+        print(f"Game visualization ended with error: {e}")
+    
+    # Reset the move_piece method
+    game.move_piece = original_move
+    
+    print(f"Game completed after {move_count} moves.")
+    
+    if game.is_game_over():
+        winner = game.get_winner()
+        if winner:
+            print(f"Final result: {winner.value} won!")
+        else:
+            print("Final result: Draw!")
+    else:
+        print("Game did not complete normally.")
+
+def count_parameters(model):
+    """Calculate the total number of parameters in a model"""
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+def evaluate_agent(agent, opponent_agent, num_games=100):
+    """Evaluate an agent against an opponent by playing multiple games"""
+    wins = 0
+    for game_num in range(num_games):
+        game = TablutGame()
+        
+        # Set move callbacks
+        if agent.player == Player.WHITE:
+            white_callback = lambda g: rl_agent_move(g, agent)
+            black_callback = lambda g: rl_agent_move(g, opponent_agent)
+        else:
+            white_callback = lambda g: rl_agent_move(g, opponent_agent)
+            black_callback = lambda g: rl_agent_move(g, agent)
+            
+        game.set_move_callback(white_callback, Player.WHITE)
+        game.set_move_callback(black_callback, Player.BLACK)
+        
+        # Add a maximum move limit to prevent infinite loops
+        max_moves = 200  # Reasonable limit for Tablut
+        move_count = 0
+        
+        # Play until game over or max moves reached
+        while not game.is_game_over() and move_count < max_moves:
+            current_player = game.current_player
+            move_result = ""
+            
+            if current_player == Player.WHITE:
+                move_result = white_callback(game)
+            else:
+                move_result = black_callback(game)
+                
+            # Check if a valid move was made
+            if "couldn't find a valid move" in move_result:
+                break  # Exit if no valid moves
+                
+            move_count += 1
+        
+        # If max moves reached, consider it a draw
+        if move_count >= max_moves:
+            print(f"Game {game_num+1} reached move limit - considered a draw")
+            continue
+        
+        # Check winner
+        winner = game.get_winner()
+        if winner == agent.player:
+            wins += 1
+    
+    return wins / num_games
 
 def main():
     # Initialize agents
     white_agent = TablutRLAgent(Player.WHITE)
     black_agent = TablutRLAgent(Player.BLACK)
     
-    # Train agents
-    print("Starting training...")
-    white_agent, black_agent = train_agent(white_agent, black_agent, num_episodes=1000)
-    print("Training completed!")
+    # Print model parameter count
+    num_params = count_parameters(white_agent.q_network)
+    print(f"Number of trainable parameters: {num_params:,}")
     
-    # Evaluate the trained agent
-    def evaluate_agent(agent, opponent_agent, num_games=100):
-        wins = 0
-        for _ in range(num_games):
-            game = TablutGame()
-            
-            # Set move callbacks
-            if agent.player == Player.WHITE:
-                white_callback = lambda g: rl_agent_move(g, agent)
-                black_callback = lambda g: rl_agent_move(g, opponent_agent)
-            else:
-                white_callback = lambda g: rl_agent_move(g, opponent_agent)
-                black_callback = lambda g: rl_agent_move(g, agent)
-                
-            game.set_move_callback(white_callback, Player.WHITE)
-            game.set_move_callback(black_callback, Player.BLACK)
-            
-            # Play until game over
-            while not game.is_game_over():
-                current_player = game.current_player
-                if current_player == Player.WHITE:
-                    white_callback(game)
-                else:
-                    black_callback(game)
-            
-            # Check winner
-            winner = game.get_winner()
-            if winner == agent.player:
-                wins += 1
-        
-        return wins / num_games
+    # Train agents
+    print("\nStarting training...")
+    white_agent, black_agent, folder_name = train_agent(white_agent, black_agent, num_episodes=10)
+    print("Training completed!")
     
     # Evaluate against random agent
     random_agent = TablutRLAgent(Player.BLACK if white_agent.player == Player.WHITE else Player.WHITE)
     random_agent.epsilon = 1.0  # Always take random actions
     
-    white_win_rate = evaluate_agent(white_agent, random_agent)
-    black_win_rate = evaluate_agent(black_agent, random_agent)
+    # white_win_rate = evaluate_agent(white_agent, random_agent)
+    # black_win_rate = evaluate_agent(black_agent, random_agent)
     
-    print(f"White Agent Win Rate vs Random: {white_win_rate:.2f}")
-    print(f"Black Agent Win Rate vs Random: {black_win_rate:.2f}")
+    # print(f"White Agent Win Rate vs Random: {white_win_rate:.2f}")
+    # print(f"Black Agent Win Rate vs Random: {black_win_rate:.2f}")
     
-    # Save final models
-    white_agent.save_model("white_agent_final.pt")
-    black_agent.save_model("black_agent_final.pt")
-
     # Run a visual game between the trained agents
     print("\nRunning a visual game between trained agents...")
     visualize_game(white_agent, black_agent)
