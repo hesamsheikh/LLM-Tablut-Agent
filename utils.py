@@ -113,14 +113,7 @@ class GameVisualizer:
 
 
     def run(self, game_state, white_player_type=PlayerType.GUI, black_player_type=PlayerType.GUI, is_visualization=False):
-        """Main game loop with flexible GUI control for each player
-        
-        Args:
-            game_state: The TablutGame instance
-            white_player_type: PlayerType for white player
-            black_player_type: PlayerType for black player
-            is_visualization: Whether this is for visualization (adds delays) or training/evaluation
-        """
+        """Main game loop with flexible GUI control for each player"""
         pygame.init()
         WINDOW_SIZE = self.BOARD_SIZE
         screen = pygame.display.set_mode((WINDOW_SIZE, WINDOW_SIZE))
@@ -167,6 +160,23 @@ class GameVisualizer:
                                 game_over_reason = reason
                         selected_piece = None
                         valid_moves = []
+            
+            # Handle non-GUI player moves
+            if not game_over and not current_player_gui:
+                game_state.notify_move_needed()
+                if game_state.is_game_over():
+                    game_over = True
+                    # Determine reason for game end
+                    if game_state.move_count >= game_state.MOVE_LIMIT:
+                        game_over_reason = f"Draw - Move limit ({game_state.MOVE_LIMIT} moves) reached"
+                    elif game_state.is_king_captured():
+                        game_over_reason = "King captured"
+                    elif game_state.has_king_escaped():
+                        game_over_reason = "King escaped"
+                    elif not game_state._has_any_valid_moves(game_state.current_player):
+                        game_over_reason = f"{game_state.current_player.value} has no valid moves"
+                    elif game_state.state_count.get(game_state._board_to_string(), 0) >= 3:
+                        game_over_reason = "Draw - Repeated position"
             
             # Draw the game state
             self.draw_game_state(screen, game_state, 

@@ -459,8 +459,21 @@ def visualize_game(white_agent, black_agent):
     black_agent.epsilon = 0.05
     
     # Set move callbacks for the agents
-    white_callback = lambda g: rl_agent_move(g, white_agent)
-    black_callback = lambda g: rl_agent_move(g, black_agent)
+    def white_callback(g):
+        action = white_agent.select_action(g, training=False)
+        if action:
+            from_row, from_col, to_row, to_col = action
+            success, reason = g.move_piece(from_row, from_col, to_row, to_col)
+            return f"White agent moved from ({from_row}, {from_col}) to ({to_row}, {to_col})"
+        return "White agent couldn't find a valid move"
+
+    def black_callback(g):
+        action = black_agent.select_action(g, training=False)
+        if action:
+            from_row, from_col, to_row, to_col = action
+            success, reason = g.move_piece(from_row, from_col, to_row, to_col)
+            return f"Black agent moved from ({from_row}, {from_col}) to ({to_row}, {to_col})"
+        return "Black agent couldn't find a valid move"
     
     game.set_move_callback(white_callback, Player.WHITE)
     game.set_move_callback(black_callback, Player.BLACK)
@@ -542,11 +555,11 @@ def main():
     random_agent = TablutRLAgent(Player.BLACK if white_agent.player == Player.WHITE else Player.WHITE)
     random_agent.epsilon = 1.0  # Always take random actions
     
-    white_win_rate = evaluate_agent(white_agent, random_agent)
-    black_win_rate = evaluate_agent(black_agent, random_agent)
+    # white_win_rate = evaluate_agent(white_agent, random_agent)
+    # black_win_rate = evaluate_agent(black_agent, random_agent)
     
-    print(f"White Agent Win Rate vs Random: {white_win_rate:.2f}")
-    print(f"Black Agent Win Rate vs Random: {black_win_rate:.2f}")
+    # print(f"White Agent Win Rate vs Random: {white_win_rate:.2f}")
+    # print(f"Black Agent Win Rate vs Random: {black_win_rate:.2f}")
     
     # Run a visual game between the trained agents
     print("\nRunning a visual game between trained agents...")
