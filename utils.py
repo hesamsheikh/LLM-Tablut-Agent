@@ -22,6 +22,7 @@ class PlayerType(Enum):
     GUI = "gui"
     HEURISTIC = "heuristic" 
     LLM = "llm"
+    RL = "reinforcement_learning"  # Added RL player type
 
 class GameVisualizer:
     """Class to handle game visualization separate from game logic"""
