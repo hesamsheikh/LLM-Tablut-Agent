@@ -24,6 +24,9 @@ class TablutGame:
                       (3,8), (4,8), (5,8), (4,7)]
     
     CASTLE_POSITION = (4,4)
+    
+    # Add MOVE_LIMIT as a class constant
+    MOVE_LIMIT = 40  # Maximum number of moves allowed
 
     def __init__(self):
         # Initialize 9x9 board
@@ -42,6 +45,9 @@ class TablutGame:
         self.archive_manager.add_game_state(self.board, None, None, None)
         self.move_callback = None  # to handle non-gui player (heuristic, llm, etc.)
         
+        # Add move counter
+        self.move_count = 0
+
     def set_move_callback(self, callback, player: Player):
         """Set a callback function to be called when it's the specified player's turn
         
@@ -261,6 +267,9 @@ class TablutGame:
             self.board[to_row][to_col] = piece
             self._clear_tile(from_row, from_col)
             
+            # Increment move counter
+            self.move_count += 1
+            
             # Check for captures after move
             self.check_captures(to_row, to_col, moving_player)
             
@@ -286,15 +295,20 @@ class TablutGame:
                 
                 # Determine reason for game end
                 reason = ""
-                if self.is_king_captured():
+                if self.move_count >= self.MOVE_LIMIT:
+                    reason = f"Draw - Move limit ({self.MOVE_LIMIT} moves) reached"
+                elif self.is_king_captured():
                     reason = "King captured"
                 elif self.has_king_escaped():
                     reason = "King escaped"
                 elif not self._has_any_valid_moves(self.current_player):
                     reason = f"{self.current_player.value} has no valid moves"
+                elif self.state_count.get(self._board_to_string(), 0) >= 3:
+                    reason = "Draw - Repeated position"
                 
                 self.archive_manager.save_game(winner, is_draw, description=reason)
-                
+                return True, reason  # Return the reason with success
+            
             return True, None
 
         return False, f"{self.current_player.value} attempted invalid move from ({from_row},{from_col}) to ({to_row},{to_col})"
@@ -408,11 +422,16 @@ class TablutGame:
         return False
 
     def is_game_over(self):
-        """Check if the game is over by king capture, escape, draw, or no moves"""
+        """Check if the game is over by king capture, escape, draw, or move limit"""
+        # Check move limit first
+        if self.move_count >= self.MOVE_LIMIT:
+            return True
+            
         # Check for repeated state (draw)
         current_state = self._board_to_string()
         if self.state_count.get(current_state, 0) >= 3:
             return True
+            
         return self.is_king_captured() or self.has_king_escaped()
 
     def get_winner(self):
@@ -420,10 +439,14 @@ class TablutGame:
         if not self.is_game_over():
             return None
             
-        # Check for draw first
+        # Check for move limit first
+        if self.move_count >= self.MOVE_LIMIT:
+            return None  # Draw due to move limit
+            
+        # Check for draw by repeated state
         current_state = self._board_to_string()
-        if self.state_count.get(current_state, 0) >= 2:
-            return None  # Draw
+        if self.state_count.get(current_state, 0) >= 3:
+            return None  # Draw by repetition
             
         if self.is_king_captured():
             return Player.BLACK

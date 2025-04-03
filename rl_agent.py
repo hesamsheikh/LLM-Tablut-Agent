@@ -53,21 +53,44 @@ class DQN(nn.Module):
         super(DQN, self).__init__()
         
         # Input: (6, 9, 9) state representation
-        self.conv1 = nn.Conv2d(6, 32, kernel_size=3, padding=1)
-        self.conv2 = nn.Conv2d(32, 64, kernel_size=3, padding=1)
-        self.conv3 = nn.Conv2d(64, 128, kernel_size=3, padding=1)
+        self.conv1 = nn.Conv2d(6, 64, kernel_size=3, padding=1)
+        self.bn1 = nn.BatchNorm2d(64)
+        self.conv2 = nn.Conv2d(64, 128, kernel_size=3, padding=1) 
+        self.bn2 = nn.BatchNorm2d(128)
+        self.conv3 = nn.Conv2d(128, 256, kernel_size=3, padding=1)
+        self.bn3 = nn.BatchNorm2d(256)
+        self.conv4 = nn.Conv2d(256, 256, kernel_size=3, padding=1)
+        self.bn4 = nn.BatchNorm2d(256)
+        
+        # Residual connections
+        self.res1 = nn.Conv2d(6, 64, kernel_size=1)  # Changed input channels to match first layer
+        self.res2 = nn.Conv2d(64, 128, kernel_size=1)  # Changed input/output channels to match second layer
         
         # Output layer: For each of the 9x9 positions, predict Q-values for 4 directions
-        self.output = nn.Conv2d(128, 4, kernel_size=1)
+        self.output = nn.Conv2d(256, 4, kernel_size=1)
         
         # Activation functions
         self.relu = nn.ReLU()
+        self.dropout = nn.Dropout(0.2)
     
     def forward(self, x):
-        # CNN layers
-        x = self.relu(self.conv1(x))
-        x = self.relu(self.conv2(x))
-        x = self.relu(self.conv3(x))
+        # First conv block with residual
+        identity = x
+        x = self.relu(self.bn1(self.conv1(x)))
+        x = self.dropout(x)
+        x = x + self.res1(identity)
+        
+        # Second conv block with residual
+        identity = x
+        x = self.relu(self.bn2(self.conv2(x)))
+        x = self.dropout(x)
+        x = x + self.res2(identity)
+        
+        # Additional conv layers
+        x = self.relu(self.bn3(self.conv3(x)))
+        x = self.dropout(x)
+        x = self.relu(self.bn4(self.conv4(x)))
+        x = self.dropout(x)
         
         # Output Q-values for each position and direction
         q_values = self.output(x)
@@ -519,11 +542,11 @@ def main():
     random_agent = TablutRLAgent(Player.BLACK if white_agent.player == Player.WHITE else Player.WHITE)
     random_agent.epsilon = 1.0  # Always take random actions
     
-    # white_win_rate = evaluate_agent(white_agent, random_agent)
-    # black_win_rate = evaluate_agent(black_agent, random_agent)
+    white_win_rate = evaluate_agent(white_agent, random_agent)
+    black_win_rate = evaluate_agent(black_agent, random_agent)
     
-    # print(f"White Agent Win Rate vs Random: {white_win_rate:.2f}")
-    # print(f"Black Agent Win Rate vs Random: {black_win_rate:.2f}")
+    print(f"White Agent Win Rate vs Random: {white_win_rate:.2f}")
+    print(f"Black Agent Win Rate vs Random: {black_win_rate:.2f}")
     
     # Run a visual game between the trained agents
     print("\nRunning a visual game between trained agents...")

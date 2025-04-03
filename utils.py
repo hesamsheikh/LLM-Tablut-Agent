@@ -47,6 +47,10 @@ class GameVisualizer:
         self.PIECE_RADIUS = 30
         self.HIGHLIGHT_RADIUS = self.PIECE_RADIUS
         self.MOVE_MARKER_RADIUS = 10
+        
+        # Add font color for game over messages
+        self.TEXT_COLOR = (255, 255, 255)  # White text
+        self.GAME_OVER_BG = (0, 0, 0)      # Black background
 
     def draw_game_state(self, screen, game_state, selected_piece=None, valid_moves=None):
         """Draw the current game state on the screen"""
@@ -107,8 +111,6 @@ class GameVisualizer:
                            (0, i * self.CELL_SIZE), 
                            (self.BOARD_SIZE, i * self.CELL_SIZE))
 
-        pygame.display.flip()
-
 
     def run(self, game_state, white_player_type=PlayerType.GUI, black_player_type=PlayerType.GUI, is_visualization=False):
         """Main game loop with flexible GUI control for each player
@@ -124,36 +126,26 @@ class GameVisualizer:
         screen = pygame.display.set_mode((WINDOW_SIZE, WINDOW_SIZE))
         pygame.display.set_caption("Tablut")
         clock = pygame.time.Clock()
+        
+        # Initialize font for game over message
+        font = pygame.font.Font(None, 36)
 
         running = True
         selected_piece = None
         valid_moves = []
         game_over = False
+        game_over_reason = None
         
-        while running and not game_over:
+        while running:
             current_player_gui = (white_player_type == PlayerType.GUI if game_state.current_player == Player.WHITE 
                                else black_player_type == PlayerType.GUI)
-            
-            # Notify game that a programmatic move is needed
-            if not current_player_gui:
-                game_state.notify_move_needed()
-                # Check if the game is over after the programmatic move
-                if game_state.is_game_over():
-                    game_over = True
-                    # Only add delay for visualization
-                    if is_visualization:
-                        # Draw the final state before exiting
-                        self.draw_game_state(screen, game_state, None, None)
-                        pygame.display.flip()
-                        pygame.time.delay(2000)  # Show final state for 2 seconds
-                    break
             
             # Handle pygame events
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     running = False
                     
-                # Only process mouse events if current player uses GUI
+                # Only process mouse events if current player uses GUI and game is not over
                 if event.type == pygame.MOUSEBUTTONDOWN and not game_over and current_player_gui:
                     mouse_x, mouse_y = pygame.mouse.get_pos()
                     col = mouse_x // (WINDOW_SIZE // 9)
@@ -164,24 +156,49 @@ class GameVisualizer:
                         if piece != Piece.EMPTY:
                             is_white_turn = (game_state.current_player == Player.WHITE)
                             if ((piece == Piece.WHITE or piece == Piece.KING) and is_white_turn) or \
-                                (piece == Piece.BLACK and not is_white_turn):
+                               (piece == Piece.BLACK and not is_white_turn):
                                 selected_piece = (row, col)
                                 valid_moves = game_state.get_valid_moves(row, col)
                     else:
                         if (row, col) in valid_moves:
-                            game_state.move_piece(selected_piece[0], selected_piece[1], row, col)
-                            if game_state.is_game_over():
+                            success, reason = game_state.move_piece(selected_piece[0], selected_piece[1], row, col)
+                            if success and reason:  # If game ended with a reason
                                 game_over = True
+                                game_over_reason = reason
                         selected_piece = None
                         valid_moves = []
             
-            # Update display
+            # Draw the game state
             self.draw_game_state(screen, game_state, 
                                selected_piece if current_player_gui else None,
                                valid_moves if current_player_gui else None)
+            
+            # Draw game over message if game is over
+            if game_over and game_over_reason:
+                # Create semi-transparent overlay
+                overlay = pygame.Surface((WINDOW_SIZE, 100))
+                overlay.fill(self.GAME_OVER_BG)
+                overlay.set_alpha(200)
+                screen.blit(overlay, (0, WINDOW_SIZE // 2 - 50))
+                
+                # Render game over message
+                winner = game_state.get_winner()
+                if winner:
+                    text = f"Game Over! Winner: {winner.value}"
+                else:
+                    text = "Game Over! Draw!"
+                text_surface = font.render(text, True, self.TEXT_COLOR)
+                screen.blit(text_surface, (WINDOW_SIZE // 2 - text_surface.get_width() // 2, 
+                                         WINDOW_SIZE // 2 - 40))
+                
+                # Render reason
+                reason_surface = font.render(game_over_reason, True, self.TEXT_COLOR)
+                screen.blit(reason_surface, (WINDOW_SIZE // 2 - reason_surface.get_width() // 2, 
+                                           WINDOW_SIZE // 2))
+            
             pygame.display.flip()
             
-            # Only add frame rate throttling for visualization
+            # Frame rate control
             if is_visualization:
                 clock.tick(10)  # Slower for visualization
             else:
