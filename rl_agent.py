@@ -255,3 +255,241 @@ def rl_agent_move(game, agent):
     else:
         return "RL agent couldn't find a valid move"
 
+def train_agent(white_agent=None, black_agent=None, num_episodes=1000):
+    """Train agent(s) by playing games"""
+    # Initialize agents if not provided
+    if white_agent is None:
+        white_agent = TablutRLAgent(Player.WHITE)
+    if black_agent is None:
+        black_agent = TablutRLAgent(Player.BLACK)
+    
+    # Training stats
+    white_wins = 0
+    black_wins = 0
+    draws = 0
+    
+    for episode in range(num_episodes):
+        game = TablutGame()
+        
+        # Set move callbacks
+        white_callback = lambda g: rl_agent_move(g, white_agent)
+        black_callback = lambda g: rl_agent_move(g, black_agent)
+        
+        game.set_move_callback(white_callback, Player.WHITE)
+        game.set_move_callback(black_callback, Player.BLACK)
+        
+        # Reset state
+        current_state = board_to_state_tensor(game.board)
+        done = False
+        total_reward = {Player.WHITE: 0, Player.BLACK: 0}
+        transitions = {Player.WHITE: [], Player.BLACK: []}
+        
+        # Game loop
+        while not done:
+            current_player = game.current_player
+            current_agent = white_agent if current_player == Player.WHITE else black_agent
+            
+            # Store the board state before the move
+            pre_move_board = [row[:] for row in game.board]
+            pre_pieces = {
+                Player.WHITE: sum(1 for row in pre_move_board for piece in row 
+                                if piece in [Piece.WHITE, Piece.KING]),
+                Player.BLACK: sum(1 for row in pre_move_board for piece in row 
+                                if piece == Piece.BLACK)
+            }
+            
+            # Select and perform action
+            action = current_agent.select_action(game, training=True)
+            
+            if action:
+                from_row, from_col, to_row, to_col = action
+                game.move_piece(from_row, from_col, to_row, to_col)
+            else:
+                # No valid moves - opponent wins
+                done = True
+                if current_player == Player.WHITE:
+                    black_wins += 1
+                else:
+                    white_wins += 1
+                continue
+            
+            # Get new state
+            next_state = board_to_state_tensor(game.board)
+            
+            # Calculate reward
+            reward = -0.1  # Move penalty
+            
+            # Check for captures
+            post_pieces = {
+                Player.WHITE: sum(1 for row in game.board for piece in row 
+                                if piece in [Piece.WHITE, Piece.KING]),
+                Player.BLACK: sum(1 for row in game.board for piece in row 
+                                if piece == Piece.BLACK)
+            }
+            
+            # Reward for capturing opponent pieces
+            pieces_captured = pre_pieces[Player.BLACK if current_player == Player.WHITE else Player.WHITE] - \
+                             post_pieces[Player.BLACK if current_player == Player.WHITE else Player.WHITE]
+            reward += pieces_captured * 1.0
+            
+            # Penalty for losing pieces
+            pieces_lost = pre_pieces[current_player] - post_pieces[current_player]
+            reward -= pieces_lost * 1.0
+            
+            # Check if game is over
+            if game.is_game_over():
+                done = True
+                winner = game.get_winner()
+                
+                if winner is not None:
+                    if winner == current_player:
+                        reward += 3.0  # Win reward
+                        if winner == Player.WHITE:
+                            white_wins += 1
+                        else:
+                            black_wins += 1
+                    else:
+                        reward -= 3.0  # Lose penalty
+                        if winner == Player.WHITE:
+                            white_wins += 1
+                        else:
+                            black_wins += 1
+                # Draw
+                else:
+                    draws += 1
+            
+            # Store transition
+            transitions[current_player].append((current_state, action, reward, next_state, done))
+            
+            # Update current state
+            current_state = next_state
+            
+            # Accumulate reward
+            total_reward[current_player] += reward
+        
+        # Add all transitions to replay buffer
+        for player, player_transitions in transitions.items():
+            agent = white_agent if player == Player.WHITE else black_agent
+            for state, action, reward, next_state, done in player_transitions:
+                agent.replay_buffer.add(state, action, reward, next_state, done)
+            
+            # Train the agent
+            loss = agent.train()
+            
+            # Decay epsilon
+            agent.decay_epsilon()
+        
+        # Update target networks periodically
+        white_agent.episodes_count += 1
+        black_agent.episodes_count += 1
+        
+        if white_agent.episodes_count % white_agent.update_target_every == 0:
+            white_agent.update_target_network()
+        
+        if black_agent.episodes_count % black_agent.update_target_every == 0:
+            black_agent.update_target_network()
+        
+        # Print progress
+        if (episode + 1) % 10 == 0:
+            print(f"Episode {episode+1}/{num_episodes}")
+            print(f"White Wins: {white_wins}, Black Wins: {black_wins}, Draws: {draws}")
+            print(f"White Epsilon: {white_agent.epsilon:.4f}, Black Epsilon: {black_agent.epsilon:.4f}")
+            print(f"White Total Reward: {total_reward[Player.WHITE]:.2f}, Black Total Reward: {total_reward[Player.BLACK]:.2f}")
+            print("-" * 40)
+        
+        # Save models periodically
+        if (episode + 1) % 100 == 0:
+            white_agent.save_model(f"white_agent_ep{episode+1}.pt")
+            black_agent.save_model(f"black_agent_ep{episode+1}.pt")
+    
+    # Save final models
+    white_agent.save_model("white_agent_final.pt")
+    black_agent.save_model("black_agent_final.pt")
+    
+    return white_agent, black_agent
+
+def visualize_game(white_agent, black_agent):
+    """Run a visual game between two agents"""
+    from utils import GameVisualizer
+    
+    # Create a new game
+    game = TablutGame()
+    
+    # Set up the game visualizer
+    visualizer = GameVisualizer()
+    
+    # Set move callbacks for the agents
+    white_callback = lambda g: rl_agent_move(g, white_agent)
+    black_callback = lambda g: rl_agent_move(g, black_agent)
+    
+    game.set_move_callback(white_callback, Player.WHITE)
+    game.set_move_callback(black_callback, Player.BLACK)
+    
+    # Set the game to use RL agents instead of GUI input
+    visualizer.run(game, 
+                  white_player_type=PlayerType.RL, 
+                  black_player_type=PlayerType.RL)
+
+def main():
+    # Initialize agents
+    white_agent = TablutRLAgent(Player.WHITE)
+    black_agent = TablutRLAgent(Player.BLACK)
+    
+    # Train agents
+    print("Starting training...")
+    white_agent, black_agent = train_agent(white_agent, black_agent, num_episodes=1000)
+    print("Training completed!")
+    
+    # Evaluate the trained agent
+    def evaluate_agent(agent, opponent_agent, num_games=100):
+        wins = 0
+        for _ in range(num_games):
+            game = TablutGame()
+            
+            # Set move callbacks
+            if agent.player == Player.WHITE:
+                white_callback = lambda g: rl_agent_move(g, agent)
+                black_callback = lambda g: rl_agent_move(g, opponent_agent)
+            else:
+                white_callback = lambda g: rl_agent_move(g, opponent_agent)
+                black_callback = lambda g: rl_agent_move(g, agent)
+                
+            game.set_move_callback(white_callback, Player.WHITE)
+            game.set_move_callback(black_callback, Player.BLACK)
+            
+            # Play until game over
+            while not game.is_game_over():
+                current_player = game.current_player
+                if current_player == Player.WHITE:
+                    white_callback(game)
+                else:
+                    black_callback(game)
+            
+            # Check winner
+            winner = game.get_winner()
+            if winner == agent.player:
+                wins += 1
+        
+        return wins / num_games
+    
+    # Evaluate against random agent
+    random_agent = TablutRLAgent(Player.BLACK if white_agent.player == Player.WHITE else Player.WHITE)
+    random_agent.epsilon = 1.0  # Always take random actions
+    
+    white_win_rate = evaluate_agent(white_agent, random_agent)
+    black_win_rate = evaluate_agent(black_agent, random_agent)
+    
+    print(f"White Agent Win Rate vs Random: {white_win_rate:.2f}")
+    print(f"Black Agent Win Rate vs Random: {black_win_rate:.2f}")
+    
+    # Save final models
+    white_agent.save_model("white_agent_final.pt")
+    black_agent.save_model("black_agent_final.pt")
+
+    # Run a visual game between the trained agents
+    print("\nRunning a visual game between trained agents...")
+    visualize_game(white_agent, black_agent)
+
+if __name__ == "__main__":
+    main()
+
