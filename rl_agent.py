@@ -424,13 +424,16 @@ def train_agent(white_agent=None, black_agent=None, num_episodes=1000):
 def visualize_game(white_agent, black_agent):
     """Run a visual game between two agents"""
     from utils import GameVisualizer
-    import time
     
     # Create a new game
     game = TablutGame()
     
     # Set up the game visualizer
     visualizer = GameVisualizer()
+    
+    # Lower exploration rates for demonstration
+    white_agent.epsilon = 0.05
+    black_agent.epsilon = 0.05
     
     # Set move callbacks for the agents
     white_callback = lambda g: rl_agent_move(g, white_agent)
@@ -439,65 +442,11 @@ def visualize_game(white_agent, black_agent):
     game.set_move_callback(white_callback, Player.WHITE)
     game.set_move_callback(black_callback, Player.BLACK)
     
-    # Add a move counter to prevent infinite loops
-    max_moves = 100
-    move_count = 0
-    
-    def custom_move_tracking(original_move_piece, game_obj):
-        def tracked_move_piece(from_row, from_col, to_row, to_col):
-            nonlocal move_count
-            result = original_move_piece(from_row, from_col, to_row, to_col)
-            move_count += 1
-            
-            # Print game state info after each move
-            if result[0]:  # If move was successful
-                if game_obj.is_game_over():
-                    winner = game_obj.get_winner()
-                    if winner:
-                        print(f"Game over! {winner.value} has won!")
-                    else:
-                        print("Game over! It's a draw!")
-                    
-                    # Check specific win/loss conditions
-                    if game_obj.has_king_escaped():
-                        print("White wins - King escaped!")
-                    elif game_obj.is_king_captured():
-                        print("Black wins - King captured!")
-            
-            return result
-        
-        return tracked_move_piece
-    
-    # Replace the move_piece method with our tracking version
-    original_move = game.move_piece
-    game.move_piece = custom_move_tracking(original_move, game)
-    
-    print("Starting visualization with modified game...")
-    print(f"White agent epsilon: {white_agent.epsilon:.2f}")
-    print(f"Black agent epsilon: {black_agent.epsilon:.2f}")
-    
-    # Run the visualization with move limit
-    try:
-        # Set the game to use RL agents instead of GUI input
-        visualizer.run(game, 
-                      white_player_type=PlayerType.RL, 
-                      black_player_type=PlayerType.RL)
-    except Exception as e:
-        print(f"Game visualization ended with error: {e}")
-    
-    # Reset the move_piece method
-    game.move_piece = original_move
-    
-    print(f"Game completed after {move_count} moves.")
-    
-    if game.is_game_over():
-        winner = game.get_winner()
-        if winner:
-            print(f"Final result: {winner.value} won!")
-        else:
-            print("Final result: Draw!")
-    else:
-        print("Game did not complete normally.")
+    # Run the game with the visualizer, specifying this is for visualization
+    visualizer.run(game, 
+                  white_player_type=PlayerType.RL, 
+                  black_player_type=PlayerType.RL,
+                  is_visualization=True)
 
 def count_parameters(model):
     """Calculate the total number of parameters in a model"""

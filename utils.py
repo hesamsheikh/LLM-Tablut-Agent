@@ -110,13 +110,14 @@ class GameVisualizer:
         pygame.display.flip()
 
 
-    def run(self, game_state, white_player_type=PlayerType.GUI, black_player_type=PlayerType.GUI):
+    def run(self, game_state, white_player_type=PlayerType.GUI, black_player_type=PlayerType.GUI, is_visualization=False):
         """Main game loop with flexible GUI control for each player
         
         Args:
             game_state: The TablutGame instance
-            white_gui: PlayerType for white player
-            black_gui: PlayerType for black player
+            white_player_type: PlayerType for white player
+            black_player_type: PlayerType for black player
+            is_visualization: Whether this is for visualization (adds delays) or training/evaluation
         """
         pygame.init()
         WINDOW_SIZE = self.BOARD_SIZE
@@ -131,12 +132,22 @@ class GameVisualizer:
         
         while running and not game_over:
             current_player_gui = (white_player_type == PlayerType.GUI if game_state.current_player == Player.WHITE 
-                                else black_player_type == PlayerType.GUI)
+                               else black_player_type == PlayerType.GUI)
             
             # Notify game that a programmatic move is needed
             if not current_player_gui:
                 game_state.notify_move_needed()
-                
+                # Check if the game is over after the programmatic move
+                if game_state.is_game_over():
+                    game_over = True
+                    # Only add delay for visualization
+                    if is_visualization:
+                        # Draw the final state before exiting
+                        self.draw_game_state(screen, game_state, None, None)
+                        pygame.display.flip()
+                        pygame.time.delay(2000)  # Show final state for 2 seconds
+                    break
+            
             # Handle pygame events
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
@@ -169,7 +180,12 @@ class GameVisualizer:
                                selected_piece if current_player_gui else None,
                                valid_moves if current_player_gui else None)
             pygame.display.flip()
-            clock.tick(60)
+            
+            # Only add frame rate throttling for visualization
+            if is_visualization:
+                clock.tick(10)  # Slower for visualization
+            else:
+                clock.tick(60)  # Faster for training/evaluation
 
         pygame.quit()
 
