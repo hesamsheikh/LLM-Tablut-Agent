@@ -160,16 +160,16 @@ class TablutEnv:
 
         # After executing the move, calculate king threat reward
         current_black_attackers = self.count_black_attackers_near_king()
-        attackers_diff = current_black_attackers - self.count_black_attackers_near_king()
+        # attackers_diff = current_black_attackers - self.count_black_attackers_near_king()
         
-        # Apply reward based on player
-        if attackers_diff != 0 and 'KING_THREATENED' in self.rewards:
-            if current_player == Player.BLACK:
-                # Black gets reward for increasing threat (positive attackers_diff)
-                reward += attackers_diff * self.rewards['KING_THREATENED']
-            else:  # Player.WHITE
-                # White gets penalized for allowing increased threat
-                reward -= attackers_diff * self.rewards['KING_THREATENED']
+        # # Apply reward based on player
+        # if attackers_diff != 0 and 'KING_THREATENED' in self.rewards:
+        #     if current_player == Player.BLACK:
+        #         # Black gets reward for increasing threat (positive attackers_diff)
+        #         reward += attackers_diff * self.rewards['KING_THREATENED']
+        #     else:  # Player.WHITE
+        #         # White gets penalized for allowing increased threat
+        #         reward -= attackers_diff * self.rewards['KING_THREATENED']
 
         obs = self._get_observation()
         return obs, reward, done, info

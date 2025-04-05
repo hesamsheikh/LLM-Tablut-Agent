@@ -266,7 +266,7 @@ def plot_training_metrics(metrics, save_dir="./plots"):
     
     print(f"Training plots saved to {save_dir}")
 
-def evaluate_vs_random(policy_network, agent_color, episodes=10, device="cpu"):
+def evaluate_vs_random(policy_network, agent_color, episodes=10, device="cpu", move_limit=150):
     """
     Plays the agent_color side vs. random (which also picks only valid moves).
     Returns fraction of games won by 'agent_color'.
@@ -274,7 +274,7 @@ def evaluate_vs_random(policy_network, agent_color, episodes=10, device="cpu"):
     wins = 0
     end_reasons = []
     for _ in range(episodes):
-        env = TablutEnv(move_limit=40)
+        env = TablutEnv(move_limit=move_limit)
         obs = env.reset()
         done = False
         info = {}
@@ -363,26 +363,29 @@ def main():
     GAE_LAMBDA = 0.9
     CLIP_RATIO = 0.2
     VALUE_COEF = 0.5
-    INITIAL_ENTROPY = 0.05
-    FINAL_ENTROPY = 0.01
+    INITIAL_ENTROPY = 0.1
+    FINAL_ENTROPY = 0.001
     MAX_EPISODES = 3000
     MAX_STEPS_PER_EPISODE = 150
-    UPDATE_FREQ = 1024
+    UPDATE_FREQ = 512
     PPO_EPOCHS = 4
     EVAL_FREQ = 100
     SAVE_FREQ = 500
     MIN_BATCH_SIZE = 512
     
+    # Choose which agent to train
+    AGENT_COLOR = Player.WHITE  # Change to Player.WHITE to train white agent
+    
     # Custom rewards with KING_THREATENED reward
     custom_rewards = {
-        'CAPTURE_PIECE': 0.5,
-        'KING_CLOSER': 0.5,
-        'KING_THREATENED': 0.7,  # New reward for black pieces adjacent to king
-        'WIN': 10.0,               
-        'INVALID_MOVE': -0.2,      
-        'STEP_PENALTY': -0.02,
-        'DRAW': 0,
-        'LOSS': -10.0,
+        'CAPTURE_PIECE': 0.0,
+        'KING_CLOSER': 0.0,
+        'KING_THREATENED': 0.0, # Disable
+        'WIN': 10.0,            # Or 1.0
+        'INVALID_MOVE': 0.0,    # Assuming masking works
+        'STEP_PENALTY': -0.01,   # Small penalty
+        'DRAW': 0.0,             # Usually 0 for draw
+        'LOSS': -10.0,           # Or -1.0 (Symmetric to WIN)
     }
 
     # Set up device
@@ -397,6 +400,7 @@ def main():
     # Count and print trainable parameters
     total_params = sum(p.numel() for p in policy_network.parameters() if p.requires_grad)
     print(f"Total trainable parameters: {total_params:,}")
+    print(f"Training as {'BLACK' if AGENT_COLOR == Player.BLACK else 'WHITE'} player")
     
     optimizer = optim.Adam(policy_network.parameters(), lr=LR)
     
@@ -409,21 +413,15 @@ def main():
         'policy_losses': [],
         'value_losses': [],
         'entropies': [],
-        'eval_white_winrates': [],
-        'eval_black_winrates': []
+        'win_rates': []
     }
     
     # Start training
     total_steps = 0
-    
-    # Black curriculum configuration
-    INITIAL_FOCUS_BLACK = True
-    CURRICULUM_EPISODES = 500  # Give Black a longer curriculum since it's harder to learn
-    
-    INITIAL_TEMP = 1.5
-    FINAL_TEMP = 0.2
-    
     total_steps_since_update = 0
+    
+    INITIAL_TEMP = 1.0
+    FINAL_TEMP = 0.1
     
     for episode in range(MAX_EPISODES):
         # Decay learning rate
@@ -438,83 +436,43 @@ def main():
         done = False
         episode_reward = 0
         
-        # Store previous state to calculate king threat differences
+        # Track previous number of black pieces adjacent to king for reward calculation
         prev_black_attackers = count_black_attackers_near_king(env.game)
         
-        if INITIAL_FOCUS_BLACK and episode < CURRICULUM_EPISODES:
-            # Black curriculum phase
-            while not done:
-                # Temperature calculation
-                temp = max(FINAL_TEMP, INITIAL_TEMP * (1 - episode/500))
-                
-                current_player = env.game.current_player
-                
-                if current_player == Player.WHITE:
-                    # Let White make a random move (not learning from it)
-                    action = select_random_valid_action(env.game)
-                    next_obs, reward, done, info = env.step(action)
-                    # Don't add White's action to memory
-                else:
-                    # Black's turn - agent makes move and learns
-                    action, log_prob, value, valid_mask = select_action(obs, env, policy_network, device, temperature=temp)
-                    next_obs, reward, done, info = env.step(action)
-                    
-                    # Calculate king threat reward after move
-                    current_black_attackers = count_black_attackers_near_king(env.game)
-                    attackers_diff = current_black_attackers - prev_black_attackers
-                    if attackers_diff > 0:
-                        # Black gets positive reward for increasing threat to king
-                        king_reward = attackers_diff * env.rewards['KING_THREATENED']
-                        reward += king_reward
-                    
-                    memory.add(obs, action, log_prob, value, reward, done, valid_mask)
-                    prev_black_attackers = current_black_attackers
-                
-                obs = next_obs
-                episode_reward += reward
-                total_steps += 1
-                total_steps_since_update += 1
-        else:
-            # Normal self-play phase
-            while not done:
-                # Calculate temperature
-                temp = max(FINAL_TEMP, INITIAL_TEMP * (1 - episode/500))
+        while not done:
+            # Temperature calculation
+            temp = max(FINAL_TEMP, INITIAL_TEMP * (1 - episode/MAX_EPISODES))
+            
+            current_player = env.game.current_player
+            
+            if current_player == AGENT_COLOR:
+                # Agent makes a move and learns using its policy network
                 action, log_prob, value, valid_mask = select_action(obs, env, policy_network, device, temperature=temp)
-                
-                # Execute action
                 next_obs, reward, done, info = env.step(action)
                 
-                # Calculate king threat reward after move
-                current_black_attackers = count_black_attackers_near_king(env.game)
-                attackers_diff = current_black_attackers - prev_black_attackers
-                
-                # Apply reward based on player
-                if env.game.current_player == Player.BLACK:
-                    if attackers_diff > 0:
-                        # Black gets positive reward for increasing threat to king
-                        king_reward = attackers_diff * env.rewards['KING_THREATENED']
-                        reward += king_reward
-                else:  # White
-                    if attackers_diff > 0:
-                        # White gets negative reward for allowing increased threat to king
-                        king_reward = -attackers_diff * env.rewards['KING_THREATENED']
-                        reward += king_reward
-                
-                # Store in memory
+                # Store in memory with proper log_prob and value
                 memory.add(obs, action, log_prob, value, reward, done, valid_mask)
                 
-                obs = next_obs
+                # Track episode reward
                 episode_reward += reward
                 total_steps += 1
                 total_steps_since_update += 1
+            else:
+                # Opponent makes a random move
+                action = select_random_valid_action(env.game)
+                next_obs, reward, done, info = env.step(action)
                 
-                # Update previous state
-                prev_black_attackers = current_black_attackers
+                # Don't count opponent's rewards in episode total
+                # Don't store opponent's actions in memory
+            
+            # Update state
+            obs = next_obs
+            prev_black_attackers = count_black_attackers_near_king(env.game)
         
         # Train when we've collected enough steps
         if total_steps_since_update >= UPDATE_FREQ and len(memory) >= MIN_BATCH_SIZE:
             # Train PPO with accumulated experience
-            entropy_coef = max(FINAL_ENTROPY, INITIAL_ENTROPY * (1 - episode / (MAX_EPISODES * 1.5))) # Decay over 1.5x the episodes
+            entropy_coef = max(FINAL_ENTROPY, INITIAL_ENTROPY * (1 - episode/MAX_EPISODES))
             training_stats = train_ppo(
                 policy_network=policy_network,
                 optimizer=optimizer,
@@ -555,18 +513,18 @@ def main():
         # Evaluation
         if (episode + 1) % EVAL_FREQ == 0:
             print("Evaluating performance vs. random player...")
-            win_rate_white = evaluate_vs_random(policy_network, Player.WHITE, episodes=20, device=device)
-            win_rate_black = evaluate_vs_random(policy_network, Player.BLACK, episodes=20, device=device)
-            metrics['eval_white_winrates'].append(win_rate_white)
-            metrics['eval_black_winrates'].append(win_rate_black)
-            print(f"  White Win Rate: {win_rate_white:.2f}, Black Win Rate: {win_rate_black:.2f}")
+            win_rate = evaluate_vs_random(policy_network, AGENT_COLOR, episodes=20, device=device, 
+                                         move_limit=MAX_STEPS_PER_EPISODE)
+            metrics['win_rates'].append(win_rate)
+            print(f"  Win Rate: {win_rate:.2f}")
         
         # Save model
         if (episode + 1) % SAVE_FREQ == 0:
+            color_name = "black" if AGENT_COLOR == Player.BLACK else "white"
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            save_dir = os.path.join("model", "ppo_" + timestamp)
+            save_dir = os.path.join("model", f"ppo_{color_name}_{timestamp}")
             os.makedirs(save_dir, exist_ok=True)
-            model_path = os.path.join(save_dir, f"tablut_ppo_ep{episode+1}.pth")
+            model_path = os.path.join(save_dir, f"tablut_ppo_{color_name}_ep{episode+1}.pth")
             torch.save(policy_network.state_dict(), model_path)
             print(f"Model saved to {model_path}")
             
