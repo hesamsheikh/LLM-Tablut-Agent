@@ -252,33 +252,34 @@ def train_ppo(policy_network, optimizer, memory, device,
 def plot_training_metrics(metrics, save_dir="./plots"):
     """Plot and save training metrics charts"""
     os.makedirs(save_dir, exist_ok=True)
-    episodes = list(range(1, len(metrics['episode_rewards']) + 1))
     
-    # Plot loss
+    # Plot loss (using proper length)
     plt.figure(figsize=(12, 6))
-    plt.plot(episodes, metrics['policy_losses'], label='Policy Loss')
-    plt.plot(episodes, metrics['value_losses'], label='Value Loss')
+    loss_episodes = list(range(1, len(metrics['policy_losses']) + 1))
+    plt.plot(loss_episodes, metrics['policy_losses'], label='Policy Loss')
+    plt.plot(loss_episodes, metrics['value_losses'], label='Value Loss')
     plt.title('Training Losses Over Time')
-    plt.xlabel('Episode')
+    plt.xlabel('Training Updates')
     plt.ylabel('Loss')
     plt.legend()
     plt.grid(True)
     plt.savefig(os.path.join(save_dir, 'loss_plot.png'))
     
-    # Plot rewards
+    # Plot rewards (using all episodes)
     plt.figure(figsize=(12, 6))
-    plt.plot(episodes, metrics['episode_rewards'])
+    reward_episodes = list(range(1, len(metrics['episode_rewards']) + 1))
+    plt.plot(reward_episodes, metrics['episode_rewards'])
     plt.title('Episode Rewards Over Time')
     plt.xlabel('Episode')
     plt.ylabel('Reward')
     plt.grid(True)
     plt.savefig(os.path.join(save_dir, 'reward_plot.png'))
     
-    # Plot entropy
+    # Plot entropy (same length as losses)
     plt.figure(figsize=(12, 6))
-    plt.plot(episodes, metrics['entropies'])
+    plt.plot(loss_episodes, metrics['entropies'])
     plt.title('Policy Entropy Over Time')
-    plt.xlabel('Episode')
+    plt.xlabel('Training Updates')
     plt.ylabel('Entropy')
     plt.grid(True)
     plt.savefig(os.path.join(save_dir, 'entropy_plot.png'))
@@ -354,7 +355,8 @@ def main():
     GAE_LAMBDA = 0.9
     CLIP_RATIO = 0.2
     VALUE_COEF = 0.25
-    ENTROPY_COEF = 0.02
+    INITIAL_ENTROPY = 0.05
+    FINAL_ENTROPY = 0.01
     MAX_EPISODES = 10000
     MAX_STEPS_PER_EPISODE = 40
     UPDATE_FREQ = 64  # Smaller update frequency
@@ -369,7 +371,7 @@ def main():
         'KING_CLOSER': 0.5,
         'WIN': 10.0,
         'INVALID_MOVE': -0.2,
-        'STEP_PENALTY': 0,
+        'STEP_PENALTY': -0.05,
         'DRAW': 0,
         'LOSS': -2.0,
     }
@@ -390,7 +392,7 @@ def main():
     # Create success buffer
     success_buffer = SuccessReplayBuffer()
     REPLAY_BATCH_SIZE = 64
-    REPLAY_FREQ = 10  # Less frequent replay
+    REPLAY_FREQ = 30  # From 10 - less frequent replay
     SUCCESS_THRESHOLD = 5.0  # Consider episode successful if reward exceeds this
     
     # Training metrics
@@ -409,7 +411,7 @@ def main():
     INITIAL_FOCUS_WHITE = True  # First 1000 episodes focus on white
     
     # Start with lower temperature
-    INITIAL_TEMP = 3.0
+    INITIAL_TEMP = 5.0
     FINAL_TEMP = 0.2
     
     for episode in range(MAX_EPISODES):
@@ -430,7 +432,7 @@ def main():
             # During White curriculum phase:
             while not done:
                 # Calculate temperature inside the loop where episode is defined
-                temp = max(FINAL_TEMP, INITIAL_TEMP * (1 - episode/200))
+                temp = max(FINAL_TEMP, INITIAL_TEMP * (1 - episode/500))
                 action, log_prob, value, valid_mask = select_action(obs, env, policy_network, device, temperature=temp)
                 
                 # Execute action
@@ -457,6 +459,7 @@ def main():
             # Train after every episode as long as we have enough samples
             if len(memory) >= MIN_BATCH_SIZE and done:
                 # Train PPO
+                entropy_coef = max(FINAL_ENTROPY, INITIAL_ENTROPY * (1 - episode/1000))
                 training_stats = train_ppo(
                     policy_network=policy_network,
                     optimizer=optimizer,
@@ -465,7 +468,7 @@ def main():
                     epochs=PPO_EPOCHS,
                     clip_ratio=CLIP_RATIO,
                     value_coef=VALUE_COEF,
-                    entropy_coef=ENTROPY_COEF,
+                    entropy_coef=entropy_coef,
                     gamma=GAMMA,
                     gae_lambda=GAE_LAMBDA
                 )
@@ -480,8 +483,8 @@ def main():
             
             # Store winning episodes
             if "end_reason" in info and (
-                (env.game.current_player == Player.WHITE and info["end_reason"] == "King escaped") or
-                (env.game.current_player == Player.BLACK and info["end_reason"] == "King captured")
+                (env.game.current_player == Player.WHITE and info["end_reason"] == "King escaped" and episode_reward > 0) or
+                (env.game.current_player == Player.BLACK and info["end_reason"] == "King captured" and episode_reward > 0)
             ):
                 print(f"Storing winning episode with reward {episode_reward:.2f}")
                 success_buffer.add_episode(memory)
@@ -510,7 +513,7 @@ def main():
                     epochs=PPO_EPOCHS,
                     clip_ratio=CLIP_RATIO,
                     value_coef=VALUE_COEF,
-                    entropy_coef=ENTROPY_COEF,
+                    entropy_coef=entropy_coef,
                     gamma=GAMMA,
                     gae_lambda=GAE_LAMBDA
                 )
@@ -519,7 +522,7 @@ def main():
             # Normal self-play after curriculum phase
             while not done:
                 # Calculate temperature inside the loop where episode is defined
-                temp = max(FINAL_TEMP, INITIAL_TEMP * (1 - episode/200))
+                temp = max(FINAL_TEMP, INITIAL_TEMP * (1 - episode/500))
                 action, log_prob, value, valid_mask = select_action(obs, env, policy_network, device, temperature=temp)
                 
                 # Execute action
@@ -535,6 +538,7 @@ def main():
             # Train after every episode as long as we have enough samples
             if len(memory) >= MIN_BATCH_SIZE and done:
                 # Train PPO
+                entropy_coef = max(FINAL_ENTROPY, INITIAL_ENTROPY * (1 - episode/1000))
                 training_stats = train_ppo(
                     policy_network=policy_network,
                     optimizer=optimizer,
@@ -543,7 +547,7 @@ def main():
                     epochs=PPO_EPOCHS,
                     clip_ratio=CLIP_RATIO,
                     value_coef=VALUE_COEF,
-                    entropy_coef=ENTROPY_COEF,
+                    entropy_coef=entropy_coef,
                     gamma=GAMMA,
                     gae_lambda=GAE_LAMBDA
                 )
@@ -558,8 +562,8 @@ def main():
             
             # Store winning episodes
             if "end_reason" in info and (
-                (env.game.current_player == Player.WHITE and info["end_reason"] == "King escaped") or
-                (env.game.current_player == Player.BLACK and info["end_reason"] == "King captured")
+                (env.game.current_player == Player.WHITE and info["end_reason"] == "King escaped" and episode_reward > 0) or
+                (env.game.current_player == Player.BLACK and info["end_reason"] == "King captured" and episode_reward > 0)
             ):
                 print(f"Storing winning episode with reward {episode_reward:.2f}")
                 success_buffer.add_episode(memory)
@@ -588,7 +592,7 @@ def main():
                     epochs=PPO_EPOCHS,
                     clip_ratio=CLIP_RATIO,
                     value_coef=VALUE_COEF,
-                    entropy_coef=ENTROPY_COEF,
+                    entropy_coef=entropy_coef,
                     gamma=GAMMA,
                     gae_lambda=GAE_LAMBDA
                 )
