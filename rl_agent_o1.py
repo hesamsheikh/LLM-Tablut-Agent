@@ -9,6 +9,7 @@ import random
 import numpy as np
 from datetime import datetime
 from collections import deque
+import matplotlib.pyplot as plt 
 
 import torch
 import torch.nn as nn
@@ -299,8 +300,8 @@ class DQN(nn.Module):
         self.conv3 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
         self.conv4 = nn.Conv2d(64, 32, kernel_size=3, padding=1)
         # shape after conv3: (32,9,9) => 32*9*9 = 2592
-        self.fc1 = nn.Linear(2592, 1024)
-        self.fc2 = nn.Linear(1024, num_actions)
+        self.fc1 = nn.Linear(2592, 512)
+        self.fc2 = nn.Linear(512, num_actions)
 
     def forward(self, x):
         x = F.relu(self.conv1(x))
@@ -378,6 +379,46 @@ def evaluate_vs_random(dqn, agent_color, episodes=10):
 ###############################################################################
 # 6) TRAINING LOOP
 ###############################################################################
+def plot_training_metrics(episode_losses, episode_q_means, episode_q_mins, episode_q_maxs, 
+                          episode_rewards, save_dir="./plots"):
+    """
+    Plot and save training metrics charts.
+    """
+    os.makedirs(save_dir, exist_ok=True)
+    episodes = list(range(1, len(episode_losses) + 1))
+    
+    # Plot loss
+    plt.figure(figsize=(12, 6))
+    plt.plot(episodes, episode_losses)
+    plt.title('Training Loss Over Time')
+    plt.xlabel('Episode')
+    plt.ylabel('Loss')
+    plt.grid(True)
+    plt.savefig(os.path.join(save_dir, 'loss_plot.png'))
+    
+    # Plot Q-values
+    plt.figure(figsize=(12, 6))
+    plt.plot(episodes, episode_q_means, label='Mean Q')
+    plt.plot(episodes, episode_q_mins, label='Min Q')
+    plt.plot(episodes, episode_q_maxs, label='Max Q')
+    plt.title('Q-values Over Time')
+    plt.xlabel('Episode')
+    plt.ylabel('Q-value')
+    plt.legend()
+    plt.grid(True)
+    plt.savefig(os.path.join(save_dir, 'q_values_plot.png'))
+    
+    # Plot rewards
+    plt.figure(figsize=(12, 6))
+    plt.plot(episodes, episode_rewards)
+    plt.title('Episode Rewards Over Time')
+    plt.xlabel('Episode')
+    plt.ylabel('Reward')
+    plt.grid(True)
+    plt.savefig(os.path.join(save_dir, 'reward_plot.png'))
+    
+    print(f"Training plots saved to {save_dir}")
+
 def main():
     # Hyperparameters
     LR = 1e-5
@@ -389,7 +430,7 @@ def main():
     EPS_END = 0.01
     EPS_DECAY = 100000  # steps
     TARGET_UPDATE_FREQ = 1000
-    MAX_EPISODES = 2000
+    MAX_EPISODES = 200
     MAX_STEPS_PER_EPISODE = 300
     SAVE_EVERY = 200  # model save frequency
     
@@ -399,8 +440,8 @@ def main():
         'KING_CLOSER': 0.1,
         'WIN': 1.0,
         'INVALID_MOVE': -0.05,
-        'STEP_PENALTY': -0.001,
-        'DRAW': -0.5,
+        'STEP_PENALTY': -0.005,
+        'DRAW': -2.0,
         'LOSS': -1.0,
     }
 
@@ -430,6 +471,12 @@ def main():
     q_mean_history = deque(maxlen=100)
     q_max_history = deque(maxlen=100)
     q_min_history = deque(maxlen=100)
+
+    # Tracking metrics for plotting
+    all_episode_losses = []
+    all_episode_q_means = []
+    all_episode_q_mins = []
+    all_episode_q_maxs = []
 
     # Pre-fill replay buffer with random valid moves
     obs = env.reset()
@@ -510,6 +557,7 @@ def main():
             
             optimizer.zero_grad()
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(dqn.parameters(), max_norm=10.0)
             optimizer.step()
 
             # Store metrics
@@ -527,6 +575,13 @@ def main():
                 epsilon -= eps_decay_step
 
         episode_rewards.append(total_reward)
+
+        # Store episode metrics for plotting
+        if loss_history:
+            all_episode_losses.append(sum(loss_history) / len(loss_history))
+            all_episode_q_means.append(sum(q_mean_history) / len(q_mean_history))
+            all_episode_q_mins.append(sum(q_min_history) / len(q_min_history))
+            all_episode_q_maxs.append(sum(q_max_history) / len(q_max_history))
 
         # Logging & Evaluation
         if (episode+1) % 10 == 0:
@@ -567,6 +622,18 @@ def main():
             model_path = os.path.join(save_dir, f"dqn_ep{episode+1}.pth")
             torch.save(dqn.state_dict(), model_path)
             print(f"[Checkpoint] Saved model to {model_path}")
+
+    # After training is complete, plot and save training metrics
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    plot_dir = os.path.join("plots", timestamp)
+    plot_training_metrics(
+        all_episode_losses, 
+        all_episode_q_means, 
+        all_episode_q_mins,
+        all_episode_q_maxs,
+        episode_rewards,
+        save_dir=plot_dir
+    )
 
 if __name__ == "__main__":
     main()
