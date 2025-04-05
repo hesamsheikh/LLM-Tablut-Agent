@@ -158,6 +158,19 @@ class TablutEnv:
             done = True
             info["end_reason"] = "timeout"
 
+        # After executing the move, calculate king threat reward
+        current_black_attackers = self.count_black_attackers_near_king()
+        attackers_diff = current_black_attackers - self.count_black_attackers_near_king()
+        
+        # Apply reward based on player
+        if attackers_diff != 0 and 'KING_THREATENED' in self.rewards:
+            if current_player == Player.BLACK:
+                # Black gets reward for increasing threat (positive attackers_diff)
+                reward += attackers_diff * self.rewards['KING_THREATENED']
+            else:  # Player.WHITE
+                # White gets penalized for allowing increased threat
+                reward -= attackers_diff * self.rewards['KING_THREATENED']
+
         obs = self._get_observation()
         return obs, reward, done, info
 
@@ -213,6 +226,34 @@ class TablutEnv:
             if min_dist is None or dist < min_dist:
                 min_dist = dist
         return min_dist
+
+    def count_black_attackers_near_king(self):
+        """Count how many black pieces are adjacent to the king"""
+        # Find king position
+        king_position = None
+        for i in range(9):
+            for j in range(9):
+                if self.game.board[i][j] == Piece.KING:
+                    king_position = (i, j)
+                    break
+            if king_position:
+                break
+        
+        if not king_position:
+            return 0  # King already captured
+        
+        # Check adjacent squares for black pieces
+        black_adjacent = 0
+        row, col = king_position
+        directions = [(0, 1), (1, 0), (0, -1), (-1, 0)]
+        
+        for dr, dc in directions:
+            new_row, new_col = row + dr, col + dc
+            if 0 <= new_row < 9 and 0 <= new_col < 9:
+                if self.game.board[new_row][new_col] == Piece.BLACK:
+                    black_adjacent += 1
+        
+        return black_adjacent
 
 ###############################################################################
 # 2) ACTION MASKING HELPERS
@@ -434,15 +475,16 @@ def main():
     MAX_STEPS_PER_EPISODE = 300
     SAVE_EVERY = 200  # model save frequency
     
-    # Custom rewards (optional)
+    # Custom rewards with KING_THREATENED reward
     custom_rewards = {
-        'CAPTURE_PIECE': 0.07,
-        'KING_CLOSER': 0.1,
-        'WIN': 1.0,
-        'INVALID_MOVE': -0.05,
-        'STEP_PENALTY': -0.005,
-        'DRAW': -2.0,
-        'LOSS': -1.0,
+        'CAPTURE_PIECE': 0.5,
+        'KING_CLOSER': 0.5,
+        'KING_THREATENED': 0.7,  # New reward for black pieces adjacent to king
+        'WIN': 10.0,               
+        'INVALID_MOVE': -0.2,      
+        'STEP_PENALTY': -0.02,
+        'DRAW': 0,
+        'LOSS': -10.0,
     }
 
     # Create environment and networks

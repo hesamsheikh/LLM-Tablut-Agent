@@ -33,13 +33,16 @@ class TablutPPONetwork(nn.Module):
         
         # Batch normalization
         self.bn1 = nn.BatchNorm2d(32)
+        self.bn2 = nn.BatchNorm2d(64)
+        self.bn3 = nn.BatchNorm2d(64)
+        self.bn4 = nn.BatchNorm2d(32)
     
     def forward(self, x):
         # Extract features
         x = self.bn1(F.relu(self.conv1(x)))
-        x = F.relu(self.conv2(x))
-        x = F.relu(self.conv3(x))
-        x = F.relu(self.conv4(x))
+        x = self.bn2(F.relu(self.conv2(x)))
+        x = self.bn3(F.relu(self.conv3(x)))
+        x = self.bn4(F.relu(self.conv4(x)))
         features = x.view(x.size(0), -1)  # Flatten: (B, 32, 9, 9) -> (B, 2592)
         
         # Policy: output logits (pre-softmax)
@@ -77,56 +80,6 @@ class PPOMemory:
         self.rewards.clear()
         self.dones.clear()
         self.masks.clear()
-    
-    def __len__(self):
-        return len(self.states)
-
-class SuccessReplayBuffer:
-    def __init__(self, capacity=50000):
-        self.states = []
-        self.actions = []
-        self.probs = []
-        self.values = []
-        self.rewards = []
-        self.dones = []
-        self.masks = []
-        self.capacity = capacity
-    
-    def add_episode(self, memory):
-        # Add entire episode if we're below capacity
-        if len(self.states) + len(memory.states) <= self.capacity:
-            self.states.extend(memory.states)
-            self.actions.extend(memory.actions)
-            self.probs.extend(memory.probs)
-            self.values.extend(memory.values)
-            self.rewards.extend(memory.rewards)
-            self.dones.extend(memory.dones)
-            self.masks.extend(memory.masks)
-        else:
-            # Remove oldest experiences to make room
-            excess = len(self.states) + len(memory.states) - self.capacity
-            self.states = self.states[excess:] + memory.states
-            self.actions = self.actions[excess:] + memory.actions
-            self.probs = self.probs[excess:] + memory.probs
-            self.values = self.values[excess:] + memory.values
-            self.rewards = self.rewards[excess:] + memory.rewards
-            self.dones = self.dones[excess:] + memory.dones
-            self.masks = self.masks[excess:] + memory.masks
-    
-    def sample_batch(self, batch_size):
-        if len(self.states) < batch_size:
-            return None
-            
-        indices = np.random.choice(len(self.states), batch_size, replace=False)
-        return {
-            'states': [self.states[i] for i in indices],
-            'actions': [self.actions[i] for i in indices],
-            'probs': [self.probs[i] for i in indices],
-            'values': [self.values[i] for i in indices],
-            'rewards': [self.rewards[i] for i in indices],
-            'dones': [self.dones[i] for i in indices],
-            'masks': [self.masks[i] for i in indices]
-        }
     
     def __len__(self):
         return len(self.states)
@@ -375,6 +328,34 @@ def sample_batch(memory, batch_size):
         'masks': [memory.masks[i] for i in indices]
     }
 
+def count_black_attackers_near_king(game):
+    """Count how many black pieces are adjacent to the king"""
+    # Find king position
+    king_position = None
+    for i in range(9):
+        for j in range(9):
+            if game.board[i][j] == Piece.KING:
+                king_position = (i, j)
+                break
+        if king_position:
+            break
+    
+    if not king_position:
+        return 0  # King already captured
+    
+    # Check adjacent squares for black pieces
+    black_adjacent = 0
+    row, col = king_position
+    directions = [(0, 1), (1, 0), (0, -1), (-1, 0)]
+    
+    for dr, dc in directions:
+        new_row, new_col = row + dr, col + dc
+        if 0 <= new_row < 9 and 0 <= new_col < 9:
+            if game.board[new_row][new_col] == Piece.BLACK:
+                black_adjacent += 1
+    
+    return black_adjacent
+
 def main():
     # Hyperparameters
     LR = 3e-4
@@ -386,21 +367,22 @@ def main():
     FINAL_ENTROPY = 0.01
     MAX_EPISODES = 3000
     MAX_STEPS_PER_EPISODE = 150
-    UPDATE_FREQ = 1024  # Collect this many steps before updating, regardless of episode boundaries
+    UPDATE_FREQ = 1024
     PPO_EPOCHS = 4
     EVAL_FREQ = 100
     SAVE_FREQ = 500
-    MIN_BATCH_SIZE = 512  # For safety, still ensure we have enough data
+    MIN_BATCH_SIZE = 512
     
-    # Use the same custom rewards from the DQN implementation
+    # Custom rewards with KING_THREATENED reward
     custom_rewards = {
         'CAPTURE_PIECE': 0.5,
         'KING_CLOSER': 0.5,
-        'WIN': 10.0,
-        'INVALID_MOVE': -0.2,
+        'KING_THREATENED': 0.7,  # New reward for black pieces adjacent to king
+        'WIN': 10.0,               
+        'INVALID_MOVE': -0.2,      
         'STEP_PENALTY': -0.02,
         'DRAW': 0,
-        'LOSS': -2.0,
+        'LOSS': -10.0,
     }
 
     # Set up device
@@ -411,16 +393,15 @@ def main():
     
     # Create policy network
     policy_network = TablutPPONetwork().to(device)
+    
+    # Count and print trainable parameters
+    total_params = sum(p.numel() for p in policy_network.parameters() if p.requires_grad)
+    print(f"Total trainable parameters: {total_params:,}")
+    
     optimizer = optim.Adam(policy_network.parameters(), lr=LR)
     
     # Create memory
     memory = PPOMemory()
-    
-    # Create success buffer
-    success_buffer = SuccessReplayBuffer()
-    REPLAY_BATCH_SIZE = 64
-    REPLAY_FREQ = 30  # From 10 - less frequent replay
-    SUCCESS_THRESHOLD = 5.0  # Consider episode successful if reward exceeds this
     
     # Training metrics
     metrics = {
@@ -435,10 +416,10 @@ def main():
     # Start training
     total_steps = 0
     
-    INITIAL_FOCUS_WHITE = True
-    CURRICULUM_EPISODES = 100  # Reduced from 1000 to just 100
+    # Black curriculum configuration
+    INITIAL_FOCUS_BLACK = True
+    CURRICULUM_EPISODES = 500  # Give Black a longer curriculum since it's harder to learn
     
-    # Start with lower temperature
     INITIAL_TEMP = 1.5
     FINAL_TEMP = 0.2
     
@@ -447,9 +428,8 @@ def main():
     for episode in range(MAX_EPISODES):
         # Decay learning rate
         if episode < 500:
-            lr = LR  # Keep full learning rate initially
+            lr = LR
         else:
-            # Slower decay after finding good policy
             lr = LR * max(0.1, (1 - (episode-500)/MAX_EPISODES))
         for param_group in optimizer.param_groups:
             param_group['lr'] = lr
@@ -458,132 +438,67 @@ def main():
         done = False
         episode_reward = 0
         
-        if INITIAL_FOCUS_WHITE and episode < CURRICULUM_EPISODES:
-            # White curriculum phase (significantly shortened)
+        # Store previous state to calculate king threat differences
+        prev_black_attackers = count_black_attackers_near_king(env.game)
+        
+        if INITIAL_FOCUS_BLACK and episode < CURRICULUM_EPISODES:
+            # Black curriculum phase
             while not done:
-                # Calculate temperature inside the loop where episode is defined
+                # Temperature calculation
                 temp = max(FINAL_TEMP, INITIAL_TEMP * (1 - episode/500))
-                action, log_prob, value, valid_mask = select_action(obs, env, policy_network, device, temperature=temp)
                 
-                # Execute action
-                next_obs, reward, done, info = env.step(action)
+                current_player = env.game.current_player
                 
-                # Only store transitions when playing as White
-                if env.game.current_player == Player.BLACK:
-                    # When it's Black's turn, only store if White just moved
-                    memory.add(obs, action, log_prob, value, reward, done, valid_mask)
-                    
-                    # Let Black make a random move (but don't learn from it)
-                    if not done:
-                        black_action = select_random_valid_action(env.game)
-                        next_obs, reward, done, info = env.step(black_action)
-                        # Don't add Black's action to memory
+                if current_player == Player.WHITE:
+                    # Let White make a random move (not learning from it)
+                    action = select_random_valid_action(env.game)
+                    next_obs, reward, done, info = env.step(action)
+                    # Don't add White's action to memory
                 else:
-                    # White's turn - learn normally
+                    # Black's turn - agent makes move and learns
+                    action, log_prob, value, valid_mask = select_action(obs, env, policy_network, device, temperature=temp)
+                    next_obs, reward, done, info = env.step(action)
+                    
+                    # Calculate king threat reward after move
+                    current_black_attackers = count_black_attackers_near_king(env.game)
+                    attackers_diff = current_black_attackers - prev_black_attackers
+                    if attackers_diff > 0:
+                        # Black gets positive reward for increasing threat to king
+                        king_reward = attackers_diff * env.rewards['KING_THREATENED']
+                        reward += king_reward
+                    
                     memory.add(obs, action, log_prob, value, reward, done, valid_mask)
+                    prev_black_attackers = current_black_attackers
                 
                 obs = next_obs
                 episode_reward += reward
                 total_steps += 1
                 total_steps_since_update += 1
-            
-            # Store episode data temporarily before clearing memory
-            episode_data = {
-                'states': list(memory.states[-MAX_STEPS_PER_EPISODE:]),  # Just store the current episode
-                'actions': list(memory.actions[-MAX_STEPS_PER_EPISODE:]),
-                'probs': list(memory.probs[-MAX_STEPS_PER_EPISODE:]),
-                'values': list(memory.values[-MAX_STEPS_PER_EPISODE:]),
-                'rewards': list(memory.rewards[-MAX_STEPS_PER_EPISODE:]),
-                'dones': list(memory.dones[-MAX_STEPS_PER_EPISODE:]),
-                'masks': list(memory.masks[-MAX_STEPS_PER_EPISODE:])
-            }
-
-            # Check if the episode ended successfully
-            episode_ended_successfully = ("end_reason" in info and (
-                (env.game.current_player == Player.WHITE and info["end_reason"] == "King escaped" and episode_reward > SUCCESS_THRESHOLD) or
-                (env.game.current_player == Player.BLACK and info["end_reason"] == "King captured" and episode_reward > SUCCESS_THRESHOLD)
-            ))
-
-            # Train only when we've collected enough steps across multiple episodes
-            if total_steps_since_update >= UPDATE_FREQ and len(memory) >= MIN_BATCH_SIZE:
-                # Train PPO with accumulated experience
-                entropy_coef = max(FINAL_ENTROPY, INITIAL_ENTROPY * (1 - episode/1000))
-                training_stats = train_ppo(
-                    policy_network=policy_network,
-                    optimizer=optimizer,
-                    memory=memory,
-                    device=device,
-                    epochs=PPO_EPOCHS,
-                    clip_ratio=CLIP_RATIO,
-                    value_coef=VALUE_COEF,
-                    entropy_coef=entropy_coef,
-                    gamma=GAMMA,
-                    gae_lambda=GAE_LAMBDA,
-                    batch_size=64  # Mini-batch size
-                )
-                
-                # Store metrics
-                metrics['policy_losses'].append(training_stats['policy_loss'])
-                metrics['value_losses'].append(training_stats['value_loss'])
-                metrics['entropies'].append(training_stats['entropy'])
-                
-                # Reset step counter and clear memory
-                total_steps_since_update = 0
-                memory.clear()
-            
-            # Store winning episodes using the temporary copy
-            if episode_ended_successfully:
-                print(f"Storing winning episode with reward {episode_reward:.2f}")
-                # Create a temporary memory object to pass
-                temp_memory_for_buffer = PPOMemory()
-                temp_memory_for_buffer.states = episode_data['states']
-                temp_memory_for_buffer.actions = episode_data['actions']
-                temp_memory_for_buffer.probs = episode_data['probs']
-                temp_memory_for_buffer.values = episode_data['values']
-                temp_memory_for_buffer.rewards = episode_data['rewards']
-                temp_memory_for_buffer.dones = episode_data['dones']
-                temp_memory_for_buffer.masks = episode_data['masks']
-                success_buffer.add_episode(temp_memory_for_buffer)
-            
-            # Periodically retrain on successful experiences
-            if len(success_buffer) >= REPLAY_BATCH_SIZE and episode % REPLAY_FREQ == 0:
-                print(f"Retraining on {REPLAY_BATCH_SIZE} experiences from success buffer")
-                replay_batch = success_buffer.sample_batch(REPLAY_BATCH_SIZE)
-                
-                # Create a temporary memory object with sampled experiences
-                replay_memory = PPOMemory()
-                replay_memory.states = replay_batch['states']
-                replay_memory.actions = replay_batch['actions']
-                replay_memory.probs = replay_batch['probs']
-                replay_memory.values = replay_batch['values']
-                replay_memory.rewards = replay_batch['rewards']
-                replay_memory.dones = replay_batch['dones']
-                replay_memory.masks = replay_batch['masks']
-                
-                # Train on replay buffer
-                train_ppo(
-                    policy_network=policy_network,
-                    optimizer=optimizer,
-                    memory=replay_memory,
-                    device=device,
-                    epochs=PPO_EPOCHS,
-                    clip_ratio=CLIP_RATIO,
-                    value_coef=VALUE_COEF,
-                    entropy_coef=entropy_coef,
-                    gamma=GAMMA,
-                    gae_lambda=GAE_LAMBDA,
-                    batch_size=64  # Mini-batch size
-                )
-        
         else:
-            # Normal self-play phase starts much earlier
+            # Normal self-play phase
             while not done:
-                # Calculate temperature inside the loop where episode is defined
+                # Calculate temperature
                 temp = max(FINAL_TEMP, INITIAL_TEMP * (1 - episode/500))
                 action, log_prob, value, valid_mask = select_action(obs, env, policy_network, device, temperature=temp)
                 
                 # Execute action
                 next_obs, reward, done, info = env.step(action)
+                
+                # Calculate king threat reward after move
+                current_black_attackers = count_black_attackers_near_king(env.game)
+                attackers_diff = current_black_attackers - prev_black_attackers
+                
+                # Apply reward based on player
+                if env.game.current_player == Player.BLACK:
+                    if attackers_diff > 0:
+                        # Black gets positive reward for increasing threat to king
+                        king_reward = attackers_diff * env.rewards['KING_THREATENED']
+                        reward += king_reward
+                else:  # White
+                    if attackers_diff > 0:
+                        # White gets negative reward for allowing increased threat to king
+                        king_reward = -attackers_diff * env.rewards['KING_THREATENED']
+                        reward += king_reward
                 
                 # Store in memory
                 memory.add(obs, action, log_prob, value, reward, done, valid_mask)
@@ -592,94 +507,36 @@ def main():
                 episode_reward += reward
                 total_steps += 1
                 total_steps_since_update += 1
+                
+                # Update previous state
+                prev_black_attackers = current_black_attackers
+        
+        # Train when we've collected enough steps
+        if total_steps_since_update >= UPDATE_FREQ and len(memory) >= MIN_BATCH_SIZE:
+            # Train PPO with accumulated experience
+            entropy_coef = max(FINAL_ENTROPY, INITIAL_ENTROPY * (1 - episode / (MAX_EPISODES * 1.5))) # Decay over 1.5x the episodes
+            training_stats = train_ppo(
+                policy_network=policy_network,
+                optimizer=optimizer,
+                memory=memory,
+                device=device,
+                epochs=PPO_EPOCHS,
+                clip_ratio=CLIP_RATIO,
+                value_coef=VALUE_COEF,
+                entropy_coef=entropy_coef,
+                gamma=GAMMA,
+                gae_lambda=GAE_LAMBDA,
+                batch_size=64
+            )
             
-            # Store episode data temporarily before clearing memory
-            episode_data = {
-                'states': list(memory.states[-MAX_STEPS_PER_EPISODE:]),  # Just store the current episode
-                'actions': list(memory.actions[-MAX_STEPS_PER_EPISODE:]),
-                'probs': list(memory.probs[-MAX_STEPS_PER_EPISODE:]),
-                'values': list(memory.values[-MAX_STEPS_PER_EPISODE:]),
-                'rewards': list(memory.rewards[-MAX_STEPS_PER_EPISODE:]),
-                'dones': list(memory.dones[-MAX_STEPS_PER_EPISODE:]),
-                'masks': list(memory.masks[-MAX_STEPS_PER_EPISODE:])
-            }
-
-            # Check if the episode ended successfully
-            episode_ended_successfully = ("end_reason" in info and (
-                (env.game.current_player == Player.WHITE and info["end_reason"] == "King escaped" and episode_reward > SUCCESS_THRESHOLD) or
-                (env.game.current_player == Player.BLACK and info["end_reason"] == "King captured" and episode_reward > SUCCESS_THRESHOLD)
-            ))
-
-            # Train only when we've collected enough steps across multiple episodes
-            if total_steps_since_update >= UPDATE_FREQ and len(memory) >= MIN_BATCH_SIZE:
-                # Train PPO with accumulated experience
-                entropy_coef = max(FINAL_ENTROPY, INITIAL_ENTROPY * (1 - episode/1000))
-                training_stats = train_ppo(
-                    policy_network=policy_network,
-                    optimizer=optimizer,
-                    memory=memory,
-                    device=device,
-                    epochs=PPO_EPOCHS,
-                    clip_ratio=CLIP_RATIO,
-                    value_coef=VALUE_COEF,
-                    entropy_coef=entropy_coef,
-                    gamma=GAMMA,
-                    gae_lambda=GAE_LAMBDA,
-                    batch_size=64  # Mini-batch size
-                )
-                
-                # Store metrics
-                metrics['policy_losses'].append(training_stats['policy_loss'])
-                metrics['value_losses'].append(training_stats['value_loss'])
-                metrics['entropies'].append(training_stats['entropy'])
-                
-                # Reset step counter and clear memory
-                total_steps_since_update = 0
-                memory.clear()
+            # Store metrics
+            metrics['policy_losses'].append(training_stats['policy_loss'])
+            metrics['value_losses'].append(training_stats['value_loss'])
+            metrics['entropies'].append(training_stats['entropy'])
             
-            # Store winning episodes using the temporary copy
-            if episode_ended_successfully:
-                print(f"Storing winning episode with reward {episode_reward:.2f}")
-                # Create a temporary memory object to pass
-                temp_memory_for_buffer = PPOMemory()
-                temp_memory_for_buffer.states = episode_data['states']
-                temp_memory_for_buffer.actions = episode_data['actions']
-                temp_memory_for_buffer.probs = episode_data['probs']
-                temp_memory_for_buffer.values = episode_data['values']
-                temp_memory_for_buffer.rewards = episode_data['rewards']
-                temp_memory_for_buffer.dones = episode_data['dones']
-                temp_memory_for_buffer.masks = episode_data['masks']
-                success_buffer.add_episode(temp_memory_for_buffer)
-            
-            # Periodically retrain on successful experiences
-            if len(success_buffer) >= REPLAY_BATCH_SIZE and episode % REPLAY_FREQ == 0:
-                print(f"Retraining on {REPLAY_BATCH_SIZE} experiences from success buffer")
-                replay_batch = success_buffer.sample_batch(REPLAY_BATCH_SIZE)
-                
-                # Create a temporary memory object with sampled experiences
-                replay_memory = PPOMemory()
-                replay_memory.states = replay_batch['states']
-                replay_memory.actions = replay_batch['actions']
-                replay_memory.probs = replay_batch['probs']
-                replay_memory.values = replay_batch['values']
-                replay_memory.rewards = replay_batch['rewards']
-                replay_memory.dones = replay_batch['dones']
-                replay_memory.masks = replay_batch['masks']
-                
-                # Train on replay buffer
-                train_ppo(
-                    policy_network=policy_network,
-                    optimizer=optimizer,
-                    memory=replay_memory,
-                    device=device,
-                    epochs=PPO_EPOCHS,
-                    clip_ratio=CLIP_RATIO,
-                    value_coef=VALUE_COEF,
-                    entropy_coef=entropy_coef,
-                    gamma=GAMMA,
-                    gae_lambda=GAE_LAMBDA,
-                    batch_size=64  # Mini-batch size
-                )
+            # Reset step counter and clear memory
+            total_steps_since_update = 0
+            memory.clear()
         
         # Store episode reward
         metrics['episode_rewards'].append(episode_reward)
@@ -703,10 +560,6 @@ def main():
             metrics['eval_white_winrates'].append(win_rate_white)
             metrics['eval_black_winrates'].append(win_rate_black)
             print(f"  White Win Rate: {win_rate_white:.2f}, Black Win Rate: {win_rate_black:.2f}")
-            
-            if win_rate_white > 0.7:
-                # Train less frequently after finding good policy
-                PPO_EPOCHS = 4  # Reduce from 10
         
         # Save model
         if (episode + 1) % SAVE_FREQ == 0:
