@@ -176,8 +176,9 @@ def compute_gae(rewards, values, dones, next_value, gamma=0.99, gae_lambda=0.95)
     return advantages, returns
 
 def train_ppo(policy_network, optimizer, memory, device, 
-              epochs=4, clip_ratio=0.2, value_coef=0.5, entropy_coef=0.01, gamma=0.99, gae_lambda=0.95):
-    """Train policy network using PPO algorithm"""
+              epochs=4, clip_ratio=0.2, value_coef=0.5, entropy_coef=0.01, 
+              gamma=0.99, gae_lambda=0.95, batch_size=64):
+    """Train policy network using PPO algorithm with mini-batches"""
     # Convert memory to tensors
     states = torch.FloatTensor(np.array(memory.states)).to(device)
     actions = torch.LongTensor(memory.actions).to(device)
@@ -194,6 +195,10 @@ def train_ppo(policy_network, optimizer, memory, device,
     
     advantages, returns = compute_gae(rewards, values, dones, next_value, gamma=gamma, gae_lambda=gae_lambda)
     advantages = torch.FloatTensor(advantages).to(device)
+    
+    # Normalize advantages - crucial for training stability
+    advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+    
     returns = torch.FloatTensor(returns).to(device)
     
     # Mini-batch training
@@ -202,51 +207,73 @@ def train_ppo(policy_network, optimizer, memory, device,
     value_loss_sum = 0
     entropy_sum = 0
     
-    for _ in range(epochs):
-        # Forward pass
-        policy_logits, new_values = policy_network(states)
-        
-        # Apply action masks
-        for i in range(len(policy_logits)):
-            policy_logits[i][~masks[i]] = float('-inf')
-        
-        # Convert to probability distributions
-        action_dists = [Categorical(logits=policy_logits[i]) for i in range(len(policy_logits))]
-        
-        # Calculate new log probs
-        new_log_probs = torch.stack([dist.log_prob(actions[i]) for i, dist in enumerate(action_dists)])
-        
-        # Calculate entropy
-        entropy = torch.stack([dist.entropy() for dist in action_dists]).mean()
-        
-        # Policy loss with clipping
-        ratio = torch.exp(new_log_probs - old_log_probs)
-        surr1 = ratio * advantages
-        surr2 = torch.clamp(ratio, 1.0 - clip_ratio, 1.0 + clip_ratio) * advantages
-        policy_loss = -torch.min(surr1, surr2).mean()
-        
-        # Value loss
-        value_loss = F.mse_loss(new_values.squeeze(-1), returns)
-        
-        # Combined loss
-        loss = policy_loss + value_coef * value_loss - entropy_coef * entropy
-        
-        # Update policy
-        optimizer.zero_grad()
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(policy_network.parameters(), max_norm=0.5)
-        optimizer.step()
-        
-        total_loss += loss.item()
-        policy_loss_sum += policy_loss.item()
-        value_loss_sum += value_loss.item()
-        entropy_sum += entropy.item()
+    # Get total number of samples
+    n_samples = len(memory.states)
     
+    for _ in range(epochs):
+        # Shuffle data for mini-batches
+        indices = np.random.permutation(n_samples)
+        
+        # Process mini-batches
+        for start_idx in range(0, n_samples, batch_size):
+            end_idx = min(start_idx + batch_size, n_samples)
+            mb_indices = indices[start_idx:end_idx]
+            
+            # Get mini-batch data
+            mb_states = states[mb_indices]
+            mb_actions = actions[mb_indices]
+            mb_old_log_probs = old_log_probs[mb_indices]
+            mb_advantages = advantages[mb_indices]
+            mb_returns = returns[mb_indices]
+            mb_masks = [masks[i] for i in mb_indices]
+            
+            # Forward pass for this mini-batch
+            mb_policy_logits, mb_values = policy_network(mb_states)
+            
+            # Apply action masks
+            for i in range(len(mb_policy_logits)):
+                mb_policy_logits[i][~mb_masks[i]] = float('-inf')
+            
+            # Convert to probability distributions
+            mb_action_dists = [Categorical(logits=mb_policy_logits[i]) for i in range(len(mb_policy_logits))]
+            
+            # Calculate new log probs
+            mb_new_log_probs = torch.stack([dist.log_prob(mb_actions[i]) for i, dist in enumerate(mb_action_dists)])
+            
+            # Calculate entropy
+            mb_entropy = torch.stack([dist.entropy() for dist in mb_action_dists]).mean()
+            
+            # Policy loss with clipping
+            mb_ratio = torch.exp(mb_new_log_probs - mb_old_log_probs)
+            mb_surr1 = mb_ratio * mb_advantages
+            mb_surr2 = torch.clamp(mb_ratio, 1.0 - clip_ratio, 1.0 + clip_ratio) * mb_advantages
+            mb_policy_loss = -torch.min(mb_surr1, mb_surr2).mean()
+            
+            # Value loss
+            mb_value_loss = F.mse_loss(mb_values.squeeze(-1), mb_returns)
+            
+            # Combined loss
+            mb_loss = mb_policy_loss + value_coef * mb_value_loss - entropy_coef * mb_entropy
+            
+            # Update policy
+            optimizer.zero_grad()
+            mb_loss.backward()
+            torch.nn.utils.clip_grad_norm_(policy_network.parameters(), max_norm=0.5)
+            optimizer.step()
+            
+            # Track metrics
+            total_loss += mb_loss.item()
+            policy_loss_sum += mb_policy_loss.item()
+            value_loss_sum += mb_value_loss.item()
+            entropy_sum += mb_entropy.item()
+    
+    # Compute average metrics (dividing by epochs × number of mini-batches)
+    n_updates = epochs * ((n_samples + batch_size - 1) // batch_size)  # Ceiling division
     return {
-        'total_loss': total_loss / epochs,
-        'policy_loss': policy_loss_sum / epochs,
-        'value_loss': value_loss_sum / epochs,
-        'entropy': entropy_sum / epochs
+        'total_loss': total_loss / n_updates,
+        'policy_loss': policy_loss_sum / n_updates,
+        'value_loss': value_loss_sum / n_updates,
+        'entropy': entropy_sum / n_updates
     }
 
 def plot_training_metrics(metrics, save_dir="./plots"):
@@ -350,20 +377,20 @@ def sample_batch(memory, batch_size):
 
 def main():
     # Hyperparameters
-    LR = 5e-4
+    LR = 3e-4
     GAMMA = 0.99
     GAE_LAMBDA = 0.9
     CLIP_RATIO = 0.2
-    VALUE_COEF = 0.25
+    VALUE_COEF = 0.5
     INITIAL_ENTROPY = 0.05
     FINAL_ENTROPY = 0.01
-    MAX_EPISODES = 10000
-    MAX_STEPS_PER_EPISODE = 40
-    UPDATE_FREQ = 64  # Smaller update frequency
+    MAX_EPISODES = 3000
+    MAX_STEPS_PER_EPISODE = 150
+    UPDATE_FREQ = 1024  # Collect this many steps before updating, regardless of episode boundaries
     PPO_EPOCHS = 4
     EVAL_FREQ = 100
     SAVE_FREQ = 500
-    MIN_BATCH_SIZE = 32  # From 16
+    MIN_BATCH_SIZE = 512  # For safety, still ensure we have enough data
     
     # Use the same custom rewards from the DQN implementation
     custom_rewards = {
@@ -371,7 +398,7 @@ def main():
         'KING_CLOSER': 0.5,
         'WIN': 10.0,
         'INVALID_MOVE': -0.2,
-        'STEP_PENALTY': -0.05,
+        'STEP_PENALTY': -0.02,
         'DRAW': 0,
         'LOSS': -2.0,
     }
@@ -408,11 +435,14 @@ def main():
     # Start training
     total_steps = 0
     
-    INITIAL_FOCUS_WHITE = True  # First 1000 episodes focus on white
+    INITIAL_FOCUS_WHITE = True
+    CURRICULUM_EPISODES = 100  # Reduced from 1000 to just 100
     
     # Start with lower temperature
-    INITIAL_TEMP = 5.0
+    INITIAL_TEMP = 1.5
     FINAL_TEMP = 0.2
+    
+    total_steps_since_update = 0
     
     for episode in range(MAX_EPISODES):
         # Decay learning rate
@@ -428,8 +458,8 @@ def main():
         done = False
         episode_reward = 0
         
-        if INITIAL_FOCUS_WHITE and episode < 1000:
-            # During White curriculum phase:
+        if INITIAL_FOCUS_WHITE and episode < CURRICULUM_EPISODES:
+            # White curriculum phase (significantly shortened)
             while not done:
                 # Calculate temperature inside the loop where episode is defined
                 temp = max(FINAL_TEMP, INITIAL_TEMP * (1 - episode/500))
@@ -455,10 +485,28 @@ def main():
                 obs = next_obs
                 episode_reward += reward
                 total_steps += 1
+                total_steps_since_update += 1
             
-            # Train after every episode as long as we have enough samples
-            if len(memory) >= MIN_BATCH_SIZE and done:
-                # Train PPO
+            # Store episode data temporarily before clearing memory
+            episode_data = {
+                'states': list(memory.states[-MAX_STEPS_PER_EPISODE:]),  # Just store the current episode
+                'actions': list(memory.actions[-MAX_STEPS_PER_EPISODE:]),
+                'probs': list(memory.probs[-MAX_STEPS_PER_EPISODE:]),
+                'values': list(memory.values[-MAX_STEPS_PER_EPISODE:]),
+                'rewards': list(memory.rewards[-MAX_STEPS_PER_EPISODE:]),
+                'dones': list(memory.dones[-MAX_STEPS_PER_EPISODE:]),
+                'masks': list(memory.masks[-MAX_STEPS_PER_EPISODE:])
+            }
+
+            # Check if the episode ended successfully
+            episode_ended_successfully = ("end_reason" in info and (
+                (env.game.current_player == Player.WHITE and info["end_reason"] == "King escaped" and episode_reward > SUCCESS_THRESHOLD) or
+                (env.game.current_player == Player.BLACK and info["end_reason"] == "King captured" and episode_reward > SUCCESS_THRESHOLD)
+            ))
+
+            # Train only when we've collected enough steps across multiple episodes
+            if total_steps_since_update >= UPDATE_FREQ and len(memory) >= MIN_BATCH_SIZE:
+                # Train PPO with accumulated experience
                 entropy_coef = max(FINAL_ENTROPY, INITIAL_ENTROPY * (1 - episode/1000))
                 training_stats = train_ppo(
                     policy_network=policy_network,
@@ -470,7 +518,8 @@ def main():
                     value_coef=VALUE_COEF,
                     entropy_coef=entropy_coef,
                     gamma=GAMMA,
-                    gae_lambda=GAE_LAMBDA
+                    gae_lambda=GAE_LAMBDA,
+                    batch_size=64  # Mini-batch size
                 )
                 
                 # Store metrics
@@ -478,16 +527,23 @@ def main():
                 metrics['value_losses'].append(training_stats['value_loss'])
                 metrics['entropies'].append(training_stats['entropy'])
                 
-                # Clear memory
+                # Reset step counter and clear memory
+                total_steps_since_update = 0
                 memory.clear()
             
-            # Store winning episodes
-            if "end_reason" in info and (
-                (env.game.current_player == Player.WHITE and info["end_reason"] == "King escaped" and episode_reward > 0) or
-                (env.game.current_player == Player.BLACK and info["end_reason"] == "King captured" and episode_reward > 0)
-            ):
+            # Store winning episodes using the temporary copy
+            if episode_ended_successfully:
                 print(f"Storing winning episode with reward {episode_reward:.2f}")
-                success_buffer.add_episode(memory)
+                # Create a temporary memory object to pass
+                temp_memory_for_buffer = PPOMemory()
+                temp_memory_for_buffer.states = episode_data['states']
+                temp_memory_for_buffer.actions = episode_data['actions']
+                temp_memory_for_buffer.probs = episode_data['probs']
+                temp_memory_for_buffer.values = episode_data['values']
+                temp_memory_for_buffer.rewards = episode_data['rewards']
+                temp_memory_for_buffer.dones = episode_data['dones']
+                temp_memory_for_buffer.masks = episode_data['masks']
+                success_buffer.add_episode(temp_memory_for_buffer)
             
             # Periodically retrain on successful experiences
             if len(success_buffer) >= REPLAY_BATCH_SIZE and episode % REPLAY_FREQ == 0:
@@ -515,11 +571,12 @@ def main():
                     value_coef=VALUE_COEF,
                     entropy_coef=entropy_coef,
                     gamma=GAMMA,
-                    gae_lambda=GAE_LAMBDA
+                    gae_lambda=GAE_LAMBDA,
+                    batch_size=64  # Mini-batch size
                 )
-            
+        
         else:
-            # Normal self-play after curriculum phase
+            # Normal self-play phase starts much earlier
             while not done:
                 # Calculate temperature inside the loop where episode is defined
                 temp = max(FINAL_TEMP, INITIAL_TEMP * (1 - episode/500))
@@ -534,10 +591,28 @@ def main():
                 obs = next_obs
                 episode_reward += reward
                 total_steps += 1
+                total_steps_since_update += 1
             
-            # Train after every episode as long as we have enough samples
-            if len(memory) >= MIN_BATCH_SIZE and done:
-                # Train PPO
+            # Store episode data temporarily before clearing memory
+            episode_data = {
+                'states': list(memory.states[-MAX_STEPS_PER_EPISODE:]),  # Just store the current episode
+                'actions': list(memory.actions[-MAX_STEPS_PER_EPISODE:]),
+                'probs': list(memory.probs[-MAX_STEPS_PER_EPISODE:]),
+                'values': list(memory.values[-MAX_STEPS_PER_EPISODE:]),
+                'rewards': list(memory.rewards[-MAX_STEPS_PER_EPISODE:]),
+                'dones': list(memory.dones[-MAX_STEPS_PER_EPISODE:]),
+                'masks': list(memory.masks[-MAX_STEPS_PER_EPISODE:])
+            }
+
+            # Check if the episode ended successfully
+            episode_ended_successfully = ("end_reason" in info and (
+                (env.game.current_player == Player.WHITE and info["end_reason"] == "King escaped" and episode_reward > SUCCESS_THRESHOLD) or
+                (env.game.current_player == Player.BLACK and info["end_reason"] == "King captured" and episode_reward > SUCCESS_THRESHOLD)
+            ))
+
+            # Train only when we've collected enough steps across multiple episodes
+            if total_steps_since_update >= UPDATE_FREQ and len(memory) >= MIN_BATCH_SIZE:
+                # Train PPO with accumulated experience
                 entropy_coef = max(FINAL_ENTROPY, INITIAL_ENTROPY * (1 - episode/1000))
                 training_stats = train_ppo(
                     policy_network=policy_network,
@@ -549,7 +624,8 @@ def main():
                     value_coef=VALUE_COEF,
                     entropy_coef=entropy_coef,
                     gamma=GAMMA,
-                    gae_lambda=GAE_LAMBDA
+                    gae_lambda=GAE_LAMBDA,
+                    batch_size=64  # Mini-batch size
                 )
                 
                 # Store metrics
@@ -557,16 +633,23 @@ def main():
                 metrics['value_losses'].append(training_stats['value_loss'])
                 metrics['entropies'].append(training_stats['entropy'])
                 
-                # Clear memory
+                # Reset step counter and clear memory
+                total_steps_since_update = 0
                 memory.clear()
             
-            # Store winning episodes
-            if "end_reason" in info and (
-                (env.game.current_player == Player.WHITE and info["end_reason"] == "King escaped" and episode_reward > 0) or
-                (env.game.current_player == Player.BLACK and info["end_reason"] == "King captured" and episode_reward > 0)
-            ):
+            # Store winning episodes using the temporary copy
+            if episode_ended_successfully:
                 print(f"Storing winning episode with reward {episode_reward:.2f}")
-                success_buffer.add_episode(memory)
+                # Create a temporary memory object to pass
+                temp_memory_for_buffer = PPOMemory()
+                temp_memory_for_buffer.states = episode_data['states']
+                temp_memory_for_buffer.actions = episode_data['actions']
+                temp_memory_for_buffer.probs = episode_data['probs']
+                temp_memory_for_buffer.values = episode_data['values']
+                temp_memory_for_buffer.rewards = episode_data['rewards']
+                temp_memory_for_buffer.dones = episode_data['dones']
+                temp_memory_for_buffer.masks = episode_data['masks']
+                success_buffer.add_episode(temp_memory_for_buffer)
             
             # Periodically retrain on successful experiences
             if len(success_buffer) >= REPLAY_BATCH_SIZE and episode % REPLAY_FREQ == 0:
@@ -594,7 +677,8 @@ def main():
                     value_coef=VALUE_COEF,
                     entropy_coef=entropy_coef,
                     gamma=GAMMA,
-                    gae_lambda=GAE_LAMBDA
+                    gae_lambda=GAE_LAMBDA,
+                    batch_size=64  # Mini-batch size
                 )
         
         # Store episode reward
