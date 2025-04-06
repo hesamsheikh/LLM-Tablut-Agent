@@ -14,44 +14,263 @@ from torch.distributions import Categorical
 
 # Import existing code
 from tablut import TablutGame, Player, Piece
-from rl_agent import TablutEnv, get_valid_action_mask, select_random_valid_action
 
-class TablutPPONetwork(nn.Module):
-    def __init__(self, in_channels=7, num_actions=81*81):
-        super(TablutPPONetwork, self).__init__()
-        # Shared feature extractor (CNN)
-        self.conv1 = nn.Conv2d(in_channels, 32, kernel_size=3, padding=1)
-        self.conv2 = nn.Conv2d(32, 64, kernel_size=3, padding=1)
-        self.conv3 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
-        self.conv4 = nn.Conv2d(64, 32, kernel_size=3, padding=1)
+
+###############################################################################
+# 1) ENVIRONMENT WRAPPER (SELF-PLAY) WITH REWARD SHAPING
+###############################################################################
+class TablutEnv:
+    """
+    A self-play environment for Tablut, wrapping TablutGame.
+    One agent controls whichever player is 'current_player'.
+    
+    Configurable rewards for various game events.
+    """
+    def __init__(self, move_limit=40, rewards=None):
+        self.game = TablutGame()
+        self.move_limit = move_limit
+        # 9x9 => 81 squares for "from", 81 squares for "to" => 6561 total discrete actions
+        self.num_actions = 81 * 81
+        # Observations: [Black, White, King, Camp, Escape, Castle]
+        self.obs_shape = (6, 9, 9)
         
-        # Policy head - outputs action probabilities
-        self.policy_head = nn.Linear(2592, num_actions)
+        # Initialize rewards, use defaults if not specified
+        self.rewards = rewards
+            
+        self.reset()
+
+    def reset(self):
+        self.game = TablutGame()
+        self.steps_taken = 0
+        # Add capture counter
+        self.captures_count = 0
+        return self._get_observation()
+
+    def step(self, action):
+        """
+        Decode action => (fr, fc, tr, tc), apply it to TablutGame, 
+        compute reward, and return (next_obs, reward, done, info).
+        """
+        from_index = action // 81
+        to_index   = action % 81
+        fr, fc = divmod(from_index, 9)
+        tr, tc = divmod(to_index, 9)
+
+        current_player = self.game.current_player
+        reward = 0.0
+        done = False
+        info = {"invalid_move": False, "captured_pieces": 0, "end_reason": None}
+
+        # ----------------------------
+        # A) Count opponent pieces BEFORE move (for capture reward)
+        # ----------------------------
+        if current_player == Player.WHITE:
+            pieces_before = sum(cell == Piece.BLACK for row in self.game.board for cell in row)
+        else:  # current_player == Player.BLACK
+            pieces_before = sum(cell in [Piece.WHITE, Piece.KING] for row in self.game.board for cell in row)
+
+        # ----------------------------
+        # B) If White, track King distance BEFORE
+        # ----------------------------
+        king_dist_before = None
+        if current_player == Player.WHITE:
+            king_dist_before = self._king_distance_to_closest_escape()
+
+        # Attempt the move
+        success, end_reason = self.game.move_piece(fr, fc, tr, tc)
+        if not success:
+            # Invalid move
+            reward += self.rewards['INVALID_MOVE']
+            info["invalid_move"] = True
+        else:
+            # ----------------------------
+            # C) Capture Reward
+            # ----------------------------
+            # Compare piece counts after move
+            if current_player == Player.WHITE:
+                pieces_after = sum(cell == Piece.BLACK for row in self.game.board for cell in row)
+                if pieces_after < pieces_before:
+                    # at least one black piece was captured
+                    pieces_captured = pieces_before - pieces_after
+                    reward += self.rewards['CAPTURE_PIECE']
+                    self.captures_count += pieces_captured
+                    info["captured_pieces"] = pieces_captured
+            else:
+                pieces_after = sum(cell in [Piece.WHITE, Piece.KING] for row in self.game.board for cell in row)
+                if pieces_after < pieces_before:
+                    # captured a white soldier or the king
+                    pieces_captured = pieces_before - pieces_after
+                    reward += self.rewards['CAPTURE_PIECE']
+                    self.captures_count += pieces_captured
+                    info["captured_pieces"] = pieces_captured
+
+            # ----------------------------
+            # D) King Moves Closer
+            # ----------------------------
+            if success and current_player == Player.WHITE and king_dist_before is not None:
+                king_dist_after = self._king_distance_to_closest_escape()
+                if king_dist_after is not None and king_dist_before is not None:
+                    # If distance decreased
+                    if king_dist_after < king_dist_before:
+                        reward += self.rewards['KING_CLOSER']
+
+            # ----------------------------
+            # E) Check if game ended
+            # ----------------------------
+            if end_reason:
+                info["end_reason"] = end_reason
+                winner = self.game.get_winner()
+                if winner is None:
+                    reward += self.rewards['DRAW']  # draw
+                elif winner == current_player:
+                    reward += self.rewards['WIN']  # win
+                else:
+                    reward += self.rewards['LOSS']  # loss
+                done = True
+
+        # Step penalty
+        reward += self.rewards['STEP_PENALTY']
+
+        self.steps_taken += 1
+        if self.steps_taken >= self.move_limit and not done:
+            reward += self.rewards['DRAW']  # treat that as a draw
+            done = True
+            info["end_reason"] = "timeout"
+
+        obs = self._get_observation()
+        return obs, reward, done, info
+
+    def _get_observation(self):
+        import numpy as np
+        board = self.game.board
+        obs = np.zeros(self.obs_shape, dtype=np.float32)
+
+        for r in range(9):
+            for c in range(9):
+                piece = board[r][c]
+                if piece == Piece.BLACK:
+                    obs[0, r, c] = 1.0
+                elif piece == Piece.WHITE:
+                    obs[1, r, c] = 1.0
+                elif piece == Piece.KING:
+                    obs[2, r, c] = 1.0
+                elif piece == Piece.CAMP:
+                    obs[3, r, c] = 1.0
+                elif piece == Piece.ESCAPE:
+                    obs[4, r, c] = 1.0
+                elif piece == Piece.CASTLE:
+                    obs[5, r, c] = 1.0
         
-        # Value head - estimates state value
-        self.value_head = nn.Linear(2592, 1)
+        return obs
+
+    def _king_distance_to_closest_escape(self):
+        """
+        Return the Manhattan distance from the King to the closest escape tile,
+        or None if the king isn't on the board.
+        """
+        king_pos = None
+        for r in range(9):
+            for c in range(9):
+                if self.game.board[r][c] == Piece.KING:
+                    king_pos = (r, c)
+                    break
+            if king_pos:
+                break
+
+        if not king_pos:
+            return None  # King is captured or absent
+
+        min_dist = None
+        for (er, ec) in self.game.ESCAPE_TILES:
+            dist = abs(er - king_pos[0]) + abs(ec - king_pos[1])
+            if min_dist is None or dist < min_dist:
+                min_dist = dist
+        return min_dist
+
+
+###############################################################################
+# 2) ACTION MASKING HELPERS
+###############################################################################
+def get_valid_action_mask(game: TablutGame) -> np.ndarray:
+    """
+    Return a boolean array of shape (6561,) indicating which actions are valid
+    for the current player in 'game'.
+    """
+    mask = np.zeros(6561, dtype=bool)
+    current_player = game.current_player
+
+    for fr in range(9):
+        for fc in range(9):
+            piece = game.board[fr][fc]
+            # Check ownership
+            if current_player == Player.WHITE and piece not in [Piece.WHITE, Piece.KING]:
+                continue
+            if current_player == Player.BLACK and piece != Piece.BLACK:
+                continue
+
+            valid_moves = game.get_valid_moves(fr, fc)  # returns list of (tr, tc)
+            from_idx = fr * 9 + fc
+            for (tr, tc) in valid_moves:
+                to_idx = tr * 9 + tc
+                action_id = from_idx * 81 + to_idx
+                mask[action_id] = True
+
+    return mask
+
+def select_random_valid_action(game: TablutGame):
+    """
+    Return a random valid action from the current player's perspective.
+    """
+    mask = get_valid_action_mask(game)
+    valid_indices = np.where(mask)[0]
+    if len(valid_indices) == 0:
+        return 0
+    return np.random.choice(valid_indices)
+
+
+class TablutPPONetworkEfficient(nn.Module):
+    def __init__(self, in_channels=6):
+        super(TablutPPONetworkEfficient, self).__init__()
+        # Reduced channel counts in convolutions
+        self.conv1 = nn.Conv2d(in_channels, 16, kernel_size=3, padding=1)
+        self.conv2 = nn.Conv2d(16, 32, kernel_size=3, padding=1)
+        self.conv3 = nn.Conv2d(32, 32, kernel_size=3, padding=1) 
+        self.conv4 = nn.Conv2d(32, 16, kernel_size=3, padding=1)
+        
+        # Number of features after flattening: 16 * 9 * 9 = 1296
+        self.bottleneck = nn.Linear(1296, 256)
+        
+        # Factorized action prediction - separate "from" and "to" position heads
+        self.from_head = nn.Linear(256, 81)  # 9x9 = 81 possible "from" positions
+        self.to_head = nn.Linear(256, 81)    # 9x9 = 81 possible "to" positions
+        
+        # Value head
+        self.value_head = nn.Linear(256, 1)
         
         # Batch normalization
-        self.bn1 = nn.BatchNorm2d(32)
-        self.bn2 = nn.BatchNorm2d(64)
-        self.bn3 = nn.BatchNorm2d(64)
-        self.bn4 = nn.BatchNorm2d(32)
+        self.bn1 = nn.BatchNorm2d(16)
+        self.bn2 = nn.BatchNorm2d(32)
+        self.bn3 = nn.BatchNorm2d(32)
+        self.bn4 = nn.BatchNorm2d(16)
     
     def forward(self, x):
-        # Extract features
+        # Feature extraction
         x = self.bn1(F.relu(self.conv1(x)))
         x = self.bn2(F.relu(self.conv2(x)))
         x = self.bn3(F.relu(self.conv3(x)))
         x = self.bn4(F.relu(self.conv4(x)))
-        features = x.view(x.size(0), -1)  # Flatten: (B, 32, 9, 9) -> (B, 2592)
         
-        # Policy: output logits (pre-softmax)
-        policy_logits = self.policy_head(features)
+        features = x.view(x.size(0), -1)  # Flatten: (B, 16, 9, 9) -> (B, 1296)
+        features = F.relu(self.bottleneck(features))  # Reduce to 256 dimensions
         
-        # Value: estimate state value
+        # Predict "from" and "to" positions separately
+        from_logits = self.from_head(features)
+        to_logits = self.to_head(features)
+        
+        # Value prediction
         value = self.value_head(features)
         
-        return policy_logits, value
+        return from_logits, to_logits, value
 
 class PPOMemory:
     def __init__(self):
@@ -92,24 +311,30 @@ def select_action(obs, env, policy_network, device, evaluate=False, temperature=
     # Forward pass through network
     state_tensor = torch.FloatTensor(obs).unsqueeze(0).to(device)
     with torch.no_grad():
-        policy_logits, state_value = policy_network(state_tensor)
+        from_logits, to_logits, state_value = policy_network(state_tensor)
         
     # Apply temperature to logits before softmax for more exploration
-    policy_logits = policy_logits.squeeze(0) / temperature
-    policy_logits[~valid_mask_tensor] = float('-inf')
+    from_logits = from_logits.squeeze(0) / temperature
+    to_logits = to_logits.squeeze(0) / temperature
+    from_logits[~valid_mask_tensor] = float('-inf')
+    to_logits[~valid_mask_tensor] = float('-inf')
     
     # Convert to probabilities
-    action_probs = F.softmax(policy_logits, dim=0)
+    from_probs = F.softmax(from_logits, dim=0)
+    to_probs = F.softmax(to_logits, dim=0)
     
     # Sample from probability distribution or take best action
     if evaluate:
-        action = torch.argmax(action_probs).item()
-        return action, 0, state_value.item(), valid_mask
+        from_action = torch.argmax(from_probs).item()
+        to_action = torch.argmax(to_probs).item()
+        return (from_action, to_action), 0, state_value.item(), valid_mask
     else:
-        action_dist = Categorical(action_probs)
-        action = action_dist.sample()
-        log_prob = action_dist.log_prob(action)
-        return action.item(), log_prob.item(), state_value.item(), valid_mask
+        from_dist = Categorical(from_probs)
+        to_dist = Categorical(to_probs)
+        from_action = from_dist.sample()
+        to_action = to_dist.sample()
+        log_prob = from_dist.log_prob(from_action) + to_dist.log_prob(to_action)
+        return (from_action.item(), to_action.item()), log_prob.item(), state_value.item(), valid_mask
 
 def compute_gae(rewards, values, dones, next_value, gamma=0.99, gae_lambda=0.95):
     """Compute Generalized Advantage Estimation"""
@@ -143,7 +368,7 @@ def train_ppo(policy_network, optimizer, memory, device,
     
     # Compute advantages and returns
     with torch.no_grad():
-        _, next_value = policy_network(torch.FloatTensor(memory.states[-1]).unsqueeze(0).to(device))
+        _, _, next_value = policy_network(torch.FloatTensor(memory.states[-1]).unsqueeze(0).to(device))
         next_value = next_value.item()
     
     advantages, returns = compute_gae(rewards, values, dones, next_value, gamma=gamma, gae_lambda=gae_lambda)
@@ -181,20 +406,22 @@ def train_ppo(policy_network, optimizer, memory, device,
             mb_masks = [masks[i] for i in mb_indices]
             
             # Forward pass for this mini-batch
-            mb_policy_logits, mb_values = policy_network(mb_states)
+            mb_from_logits, mb_to_logits, mb_values = policy_network(mb_states)
             
             # Apply action masks
-            for i in range(len(mb_policy_logits)):
-                mb_policy_logits[i][~mb_masks[i]] = float('-inf')
+            for i in range(len(mb_from_logits)):
+                mb_from_logits[i][~mb_masks[i]] = float('-inf')
+                mb_to_logits[i][~mb_masks[i]] = float('-inf')
             
             # Convert to probability distributions
-            mb_action_dists = [Categorical(logits=mb_policy_logits[i]) for i in range(len(mb_policy_logits))]
+            mb_from_dists = [Categorical(logits=mb_from_logits[i]) for i in range(len(mb_from_logits))]
+            mb_to_dists = [Categorical(logits=mb_to_logits[i]) for i in range(len(mb_to_logits))]
             
             # Calculate new log probs
-            mb_new_log_probs = torch.stack([dist.log_prob(mb_actions[i]) for i, dist in enumerate(mb_action_dists)])
+            mb_new_log_probs = torch.stack([mb_from_dists[i].log_prob(mb_actions[i][0]) + mb_to_dists[i].log_prob(mb_actions[i][1]) for i in range(len(mb_from_dists))])
             
             # Calculate entropy
-            mb_entropy = torch.stack([dist.entropy() for dist in mb_action_dists]).mean()
+            mb_entropy = torch.stack([mb_from_dists[i].entropy() + mb_to_dists[i].entropy() for i in range(len(mb_from_dists))]).mean()
             
             # Policy loss with clipping
             mb_ratio = torch.exp(mb_new_log_probs - mb_old_log_probs)
@@ -266,7 +493,7 @@ def plot_training_metrics(metrics, save_dir="./plots"):
     
     print(f"Training plots saved to {save_dir}")
 
-def evaluate_vs_random(policy_network, agent_color, episodes=10, device="cpu", move_limit=150):
+def evaluate_vs_random(policy_network, agent_color, episodes=10, device="cpu", move_limit=150, custom_rewards=None):
     """
     Plays the agent_color side vs. random (which also picks only valid moves).
     Returns fraction of games won by 'agent_color'.
@@ -274,7 +501,7 @@ def evaluate_vs_random(policy_network, agent_color, episodes=10, device="cpu", m
     wins = 0
     end_reasons = []
     for _ in range(episodes):
-        env = TablutEnv(move_limit=move_limit)
+        env = TablutEnv(move_limit=move_limit, rewards=custom_rewards)
         obs = env.reset()
         done = False
         info = {}
@@ -285,12 +512,16 @@ def evaluate_vs_random(policy_network, agent_color, episodes=10, device="cpu", m
                 valid_mask = get_valid_action_mask(env.game)
                 state_t = torch.FloatTensor(obs).unsqueeze(0).to(device)
                 with torch.no_grad():
-                    policy_logits, _ = policy_network(state_t)
-                    policy_logits = policy_logits.squeeze(0)
+                    from_logits, to_logits, _ = policy_network(state_t)
+                    from_logits = from_logits.squeeze(0)
+                    to_logits = to_logits.squeeze(0)
                     # Apply mask
-                    policy_logits[~torch.BoolTensor(valid_mask).to(device)] = float('-inf')
-                    action_probs = F.softmax(policy_logits, dim=0)
-                    action = torch.argmax(action_probs).item()
+                    from_logits[~torch.BoolTensor(valid_mask).to(device)] = float('-inf')
+                    to_logits[~torch.BoolTensor(valid_mask).to(device)] = float('-inf')
+                    from_probs = F.softmax(from_logits, dim=0)
+                    to_probs = F.softmax(to_logits, dim=0)
+                    from_action = torch.argmax(from_probs).item()
+                    to_action = torch.argmax(to_probs).item()
             else:
                 # Opponent picks random valid
                 action = select_random_valid_action(env.game)
@@ -395,7 +626,7 @@ def main():
     env = TablutEnv(move_limit=MAX_STEPS_PER_EPISODE, rewards=custom_rewards)
     
     # Create policy network
-    policy_network = TablutPPONetwork().to(device)
+    policy_network = TablutPPONetworkEfficient().to(device)
     
     # Count and print trainable parameters
     total_params = sum(p.numel() for p in policy_network.parameters() if p.requires_grad)
@@ -467,7 +698,6 @@ def main():
             
             # Update state
             obs = next_obs
-            prev_black_attackers = count_black_attackers_near_king(env.game)
         
         # Train when we've collected enough steps
         if total_steps_since_update >= UPDATE_FREQ and len(memory) >= MIN_BATCH_SIZE:
@@ -513,8 +743,8 @@ def main():
         # Evaluation
         if (episode + 1) % EVAL_FREQ == 0:
             print("Evaluating performance vs. random player...")
-            win_rate = evaluate_vs_random(policy_network, AGENT_COLOR, episodes=20, device=device, 
-                                         move_limit=MAX_STEPS_PER_EPISODE)
+            win_rate = evaluate_vs_random(policy_network, AGENT_COLOR, episodes=100, device=device, 
+                                         move_limit=MAX_STEPS_PER_EPISODE, custom_rewards=custom_rewards)
             metrics['win_rates'].append(win_rate)
             print(f"  Win Rate: {win_rate:.2f}")
         
