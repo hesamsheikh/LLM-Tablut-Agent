@@ -246,6 +246,9 @@ class TablutPPONetworkEfficient(nn.Module):
         
         # Value head
         self.value_head = nn.Linear(256, 1)
+
+        # Dropout for regularization
+        self.dropout = nn.Dropout(0.1)
         
         # Batch normalization
         self.bn1 = nn.BatchNorm2d(16)
@@ -303,38 +306,86 @@ class PPOMemory:
     def __len__(self):
         return len(self.states)
 
+def get_valid_from_mask(game: TablutGame) -> np.ndarray:
+    """Return a boolean array of shape (81,) indicating which 'from' positions have valid moves."""
+    mask = np.zeros(81, dtype=bool)
+    current_player = game.current_player
+
+    for fr in range(9):
+        for fc in range(9):
+            piece = game.board[fr][fc]
+            # Check ownership
+            if current_player == Player.WHITE and piece not in [Piece.WHITE, Piece.KING]:
+                continue
+            if current_player == Player.BLACK and piece != Piece.BLACK:
+                continue
+
+            valid_moves = game.get_valid_moves(fr, fc)
+            if valid_moves:  # If this piece has any valid moves
+                from_idx = fr * 9 + fc
+                mask[from_idx] = True
+
+    return mask
+
+def get_valid_to_mask(game: TablutGame, from_pos: int) -> np.ndarray:
+    """Return a boolean array of shape (81,) indicating valid 'to' positions for the given 'from' position."""
+    mask = np.zeros(81, dtype=bool)
+    fr, fc = divmod(from_pos, 9)
+    
+    valid_moves = game.get_valid_moves(fr, fc)
+    for tr, tc in valid_moves:
+        to_idx = tr * 9 + tc
+        mask[to_idx] = True
+        
+    return mask
+
 def select_action(obs, env, policy_network, device, evaluate=False, temperature=1.0):
-    # Get valid action mask
-    valid_mask = get_valid_action_mask(env.game)
-    valid_mask_tensor = torch.BoolTensor(valid_mask).to(device)
+    # Get valid from positions mask
+    from_mask = get_valid_from_mask(env.game)
+    from_mask_tensor = torch.BoolTensor(from_mask).to(device)
     
     # Forward pass through network
     state_tensor = torch.FloatTensor(obs).unsqueeze(0).to(device)
     with torch.no_grad():
         from_logits, to_logits, state_value = policy_network(state_tensor)
         
-    # Apply temperature to logits before softmax for more exploration
+    # Apply temperature and masking to from logits
     from_logits = from_logits.squeeze(0) / temperature
-    to_logits = to_logits.squeeze(0) / temperature
-    from_logits[~valid_mask_tensor] = float('-inf')
-    to_logits[~valid_mask_tensor] = float('-inf')
-    
-    # Convert to probabilities
+    from_logits[~from_mask_tensor] = float('-inf')
     from_probs = F.softmax(from_logits, dim=0)
-    to_probs = F.softmax(to_logits, dim=0)
     
-    # Sample from probability distribution or take best action
+    # Sample or get best from position
     if evaluate:
-        from_action = torch.argmax(from_probs).item()
-        to_action = torch.argmax(to_probs).item()
-        return (from_action, to_action), 0, state_value.item(), valid_mask
+        from_pos = torch.argmax(from_probs).item()
     else:
         from_dist = Categorical(from_probs)
+        from_pos = from_dist.sample().item()
+    
+    # Now get valid to positions for this from position
+    to_mask = get_valid_to_mask(env.game, from_pos)
+    to_mask_tensor = torch.BoolTensor(to_mask).to(device)
+    
+    # Apply temperature and masking to to logits
+    to_logits = to_logits.squeeze(0) / temperature
+    to_logits[~to_mask_tensor] = float('-inf')
+    to_probs = F.softmax(to_logits, dim=0)
+    
+    # Sample or get best to position
+    if evaluate:
+        to_pos = torch.argmax(to_probs).item()
+        log_prob = 0  # Not used in evaluation
+    else:
         to_dist = Categorical(to_probs)
-        from_action = from_dist.sample()
-        to_action = to_dist.sample()
-        log_prob = from_dist.log_prob(from_action) + to_dist.log_prob(to_action)
-        return (from_action.item(), to_action.item()), log_prob.item(), state_value.item(), valid_mask
+        to_pos = to_dist.sample().item()
+        log_prob = from_dist.log_prob(torch.tensor(from_pos, device=device)) + to_dist.log_prob(torch.tensor(to_pos, device=device))
+    
+    # Combine into single action for environment
+    action = from_pos * 81 + to_pos
+    
+    if evaluate:
+        return action, log_prob, state_value.item(), (from_mask, to_mask)
+    else:
+        return action, log_prob.item(), state_value.item(), (from_mask, to_mask)
 
 def compute_gae(rewards, values, dones, next_value, gamma=0.99, gae_lambda=0.95):
     """Compute Generalized Advantage Estimation"""
@@ -359,12 +410,16 @@ def train_ppo(policy_network, optimizer, memory, device,
     """Train policy network using PPO algorithm with mini-batches"""
     # Convert memory to tensors
     states = torch.FloatTensor(np.array(memory.states)).to(device)
-    actions = torch.LongTensor(memory.actions).to(device)
+    actions = memory.actions  # We'll extract from/to from each action
     old_log_probs = torch.FloatTensor(memory.probs).to(device)
     values = torch.FloatTensor(memory.values).to(device)
     rewards = memory.rewards
     dones = memory.dones
-    masks = [torch.BoolTensor(mask).to(device) for mask in memory.masks]
+    masks = memory.masks  # Now contains (from_mask, to_mask) tuples
+    
+    # Extract from and to positions from actions
+    from_positions = [action // 81 for action in actions]
+    to_positions = [action % 81 for action in actions]
     
     # Compute advantages and returns
     with torch.no_grad():
@@ -399,29 +454,34 @@ def train_ppo(policy_network, optimizer, memory, device,
             
             # Get mini-batch data
             mb_states = states[mb_indices]
-            mb_actions = actions[mb_indices]
+            mb_from_positions = torch.LongTensor([from_positions[i] for i in mb_indices]).to(device)
+            mb_to_positions = torch.LongTensor([to_positions[i] for i in mb_indices]).to(device)
             mb_old_log_probs = old_log_probs[mb_indices]
             mb_advantages = advantages[mb_indices]
             mb_returns = returns[mb_indices]
-            mb_masks = [masks[i] for i in mb_indices]
+            mb_from_masks = [masks[i][0] for i in mb_indices]
+            mb_to_masks = [masks[i][1] for i in mb_indices]
             
             # Forward pass for this mini-batch
             mb_from_logits, mb_to_logits, mb_values = policy_network(mb_states)
             
-            # Apply action masks
+            # Apply masks
             for i in range(len(mb_from_logits)):
-                mb_from_logits[i][~mb_masks[i]] = float('-inf')
-                mb_to_logits[i][~mb_masks[i]] = float('-inf')
+                mb_from_logits[i][~torch.BoolTensor(mb_from_masks[i]).to(device)] = float('-inf')
+                mb_to_logits[i][~torch.BoolTensor(mb_to_masks[i]).to(device)] = float('-inf')
             
             # Convert to probability distributions
             mb_from_dists = [Categorical(logits=mb_from_logits[i]) for i in range(len(mb_from_logits))]
             mb_to_dists = [Categorical(logits=mb_to_logits[i]) for i in range(len(mb_to_logits))]
             
             # Calculate new log probs
-            mb_new_log_probs = torch.stack([mb_from_dists[i].log_prob(mb_actions[i][0]) + mb_to_dists[i].log_prob(mb_actions[i][1]) for i in range(len(mb_from_dists))])
+            mb_new_from_log_probs = torch.stack([dist.log_prob(mb_from_positions[i]) for i, dist in enumerate(mb_from_dists)])
+            mb_new_to_log_probs = torch.stack([dist.log_prob(mb_to_positions[i]) for i, dist in enumerate(mb_to_dists)])
+            mb_new_log_probs = mb_new_from_log_probs + mb_new_to_log_probs
             
             # Calculate entropy
-            mb_entropy = torch.stack([mb_from_dists[i].entropy() + mb_to_dists[i].entropy() for i in range(len(mb_from_dists))]).mean()
+            mb_entropy = torch.stack([dist.entropy() for dist in mb_from_dists]).mean() + \
+                         torch.stack([dist.entropy() for dist in mb_to_dists]).mean()
             
             # Policy loss with clipping
             mb_ratio = torch.exp(mb_new_log_probs - mb_old_log_probs)
@@ -447,8 +507,8 @@ def train_ppo(policy_network, optimizer, memory, device,
             value_loss_sum += mb_value_loss.item()
             entropy_sum += mb_entropy.item()
     
-    # Compute average metrics (dividing by epochs × number of mini-batches)
-    n_updates = epochs * ((n_samples + batch_size - 1) // batch_size)  # Ceiling division
+    # Compute average metrics
+    n_updates = epochs * ((n_samples + batch_size - 1) // batch_size)
     return {
         'total_loss': total_loss / n_updates,
         'policy_loss': policy_loss_sum / n_updates,
@@ -509,19 +569,7 @@ def evaluate_vs_random(policy_network, agent_color, episodes=10, device="cpu", m
             current_player = env.game.current_player
             if current_player == agent_color:
                 # Agent picks a greedy valid action using policy network
-                valid_mask = get_valid_action_mask(env.game)
-                state_t = torch.FloatTensor(obs).unsqueeze(0).to(device)
-                with torch.no_grad():
-                    from_logits, to_logits, _ = policy_network(state_t)
-                    from_logits = from_logits.squeeze(0)
-                    to_logits = to_logits.squeeze(0)
-                    # Apply mask
-                    from_logits[~torch.BoolTensor(valid_mask).to(device)] = float('-inf')
-                    to_logits[~torch.BoolTensor(valid_mask).to(device)] = float('-inf')
-                    from_probs = F.softmax(from_logits, dim=0)
-                    to_probs = F.softmax(to_logits, dim=0)
-                    from_action = torch.argmax(from_probs).item()
-                    to_action = torch.argmax(to_probs).item()
+                action, _, _, _ = select_action(obs, env, policy_network, device, evaluate=True)
             else:
                 # Opponent picks random valid
                 action = select_random_valid_action(env.game)
@@ -752,9 +800,17 @@ def main():
         if (episode + 1) % SAVE_FREQ == 0:
             color_name = "black" if AGENT_COLOR == Player.BLACK else "white"
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            
+            # Get the latest win rate if available, otherwise use 0
+            latest_win_rate = metrics['win_rates'][-1] if metrics['win_rates'] else 0
+            
+            # Format with win rate (as percentage)
+            win_rate_str = f"wr{int(latest_win_rate * 100)}"
+            
             save_dir = os.path.join("model", f"ppo_{color_name}_{timestamp}")
             os.makedirs(save_dir, exist_ok=True)
-            model_path = os.path.join(save_dir, f"tablut_ppo_{color_name}_ep{episode+1}.pth")
+            
+            model_path = os.path.join(save_dir, f"tablut_ppo_{color_name}_{win_rate_str}_ep{episode+1}.pth")
             torch.save(policy_network.state_dict(), model_path)
             print(f"Model saved to {model_path}")
             
