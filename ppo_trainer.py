@@ -695,7 +695,7 @@ def main():
     MIN_BATCH_SIZE = 512
     
     # Choose which agent to train
-    AGENT_COLOR = Player.WHITE  # Change to Player.WHITE to train white agent
+    AGENT_COLOR = Player.BLACK  # Change to Player.WHITE to train white agent
     
     # Custom rewards with KING_THREATENED reward
     custom_rewards = {
