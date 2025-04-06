@@ -228,52 +228,94 @@ def select_random_valid_action(game: TablutGame):
     return np.random.choice(valid_indices)
 
 
-class TablutPPONetworkEfficient(nn.Module):
+class TablutPPONetworkEnhanced(nn.Module):
     def __init__(self, in_channels=6):
-        super(TablutPPONetworkEfficient, self).__init__()
-        # Reduced channel counts in convolutions
-        self.conv1 = nn.Conv2d(in_channels, 16, kernel_size=3, padding=1)
-        self.conv2 = nn.Conv2d(16, 32, kernel_size=3, padding=1)
-        self.conv3 = nn.Conv2d(32, 32, kernel_size=3, padding=1) 
-        self.conv4 = nn.Conv2d(32, 16, kernel_size=3, padding=1)
+        super(TablutPPONetworkEnhanced, self).__init__()
         
-        # Number of features after flattening: 16 * 9 * 9 = 1296
-        self.bottleneck = nn.Linear(1296, 256)
+        # Increased channel counts and more complex architecture
+        self.conv1 = nn.Conv2d(in_channels, 32, kernel_size=3, padding=1)
+        self.bn1 = nn.BatchNorm2d(32)
         
-        # Factorized action prediction - separate "from" and "to" position heads
-        self.from_head = nn.Linear(256, 81)  # 9x9 = 81 possible "from" positions
-        self.to_head = nn.Linear(256, 81)    # 9x9 = 81 possible "to" positions
+        # Residual blocks
+        self.res_block1 = ResidualBlock(32, 64)
+        self.res_block2 = ResidualBlock(64, 64)
+        self.res_block3 = ResidualBlock(64, 32)
         
-        # Value head
-        self.value_head = nn.Linear(256, 1)
-
+        # Final convolution before flattening
+        self.conv_final = nn.Conv2d(32, 32, kernel_size=3, padding=1)
+        self.bn_final = nn.BatchNorm2d(32)
+        
+        # Number of features after flattening: 32 * 9 * 9 = 2592
+        self.bottleneck = nn.Linear(2592, 256)
+        
+        # Policy heads with additional layers
+        self.policy_common = nn.Linear(256, 128)
+        self.from_head = nn.Linear(128, 81)
+        self.to_head = nn.Linear(128, 81)
+        
+        # Value head with additional layer
+        self.value_hidden = nn.Linear(256, 128)
+        self.value_head = nn.Linear(128, 1)
+        
         # Dropout for regularization
         self.dropout = nn.Dropout(0.1)
-        
-        # Batch normalization
-        self.bn1 = nn.BatchNorm2d(16)
-        self.bn2 = nn.BatchNorm2d(32)
-        self.bn3 = nn.BatchNorm2d(32)
-        self.bn4 = nn.BatchNorm2d(16)
     
     def forward(self, x):
-        # Feature extraction
-        x = self.bn1(F.relu(self.conv1(x)))
-        x = self.bn2(F.relu(self.conv2(x)))
-        x = self.bn3(F.relu(self.conv3(x)))
-        x = self.bn4(F.relu(self.conv4(x)))
+        # Initial convolution
+        x = F.relu(self.bn1(self.conv1(x)))
         
-        features = x.view(x.size(0), -1)  # Flatten: (B, 16, 9, 9) -> (B, 1296)
-        features = F.relu(self.bottleneck(features))  # Reduce to 256 dimensions
+        # Residual blocks
+        x = self.res_block1(x)
+        x = self.res_block2(x)
+        x = self.res_block3(x)
         
-        # Predict "from" and "to" positions separately
-        from_logits = self.from_head(features)
-        to_logits = self.to_head(features)
+        # Final convolution
+        x = F.relu(self.bn_final(self.conv_final(x)))
         
-        # Value prediction
-        value = self.value_head(features)
+        # Flatten and bottleneck
+        features = x.view(x.size(0), -1)  # (B, 32, 9, 9) -> (B, 2592)
+        features = F.relu(self.bottleneck(features))
+        features = self.dropout(features)
+        
+        # Policy branches
+        policy_common = F.relu(self.policy_common(features))
+        policy_common = self.dropout(policy_common)
+        from_logits = self.from_head(policy_common)
+        to_logits = self.to_head(policy_common)
+        
+        # Value branch
+        value_hidden = F.relu(self.value_hidden(features))
+        value = self.value_head(value_hidden)
         
         return from_logits, to_logits, value
+
+
+class ResidualBlock(nn.Module):
+    def __init__(self, in_channels, out_channels):
+        super(ResidualBlock, self).__init__()
+        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1)
+        self.bn1 = nn.BatchNorm2d(out_channels)
+        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1)
+        self.bn2 = nn.BatchNorm2d(out_channels)
+        
+        # Skip connection with 1x1 conv if dimensions change
+        self.skip = nn.Sequential()
+        if in_channels != out_channels:
+            self.skip = nn.Sequential(
+                nn.Conv2d(in_channels, out_channels, kernel_size=1, bias=False),
+                nn.BatchNorm2d(out_channels)
+            )
+    
+    def forward(self, x):
+        residual = x
+        
+        out = F.relu(self.bn1(self.conv1(x)))
+        out = self.bn2(self.conv2(out))
+        
+        out += self.skip(residual)
+        out = F.relu(out)
+        
+        return out
 
 class PPOMemory:
     def __init__(self):
@@ -674,7 +716,7 @@ def main():
     env = TablutEnv(move_limit=MAX_STEPS_PER_EPISODE, rewards=custom_rewards)
     
     # Create policy network
-    policy_network = TablutPPONetworkEfficient().to(device)
+    policy_network = TablutPPONetworkEnhanced().to(device)
     
     # Count and print trainable parameters
     total_params = sum(p.numel() for p in policy_network.parameters() if p.requires_grad)
@@ -701,6 +743,9 @@ def main():
     
     INITIAL_TEMP = 1.0
     FINAL_TEMP = 0.1
+    
+    # Add this at the beginning of the main function (with other variables)
+    best_win_rate = 0.0
     
     for episode in range(MAX_EPISODES):
         # Decay learning rate
@@ -795,27 +840,25 @@ def main():
                                          move_limit=MAX_STEPS_PER_EPISODE, custom_rewards=custom_rewards)
             metrics['win_rates'].append(win_rate)
             print(f"  Win Rate: {win_rate:.2f}")
-        
-        # Save model
-        if (episode + 1) % SAVE_FREQ == 0:
-            color_name = "black" if AGENT_COLOR == Player.BLACK else "white"
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             
-            # Get the latest win rate if available, otherwise use 0
-            latest_win_rate = metrics['win_rates'][-1] if metrics['win_rates'] else 0
-            
-            # Format with win rate (as percentage)
-            win_rate_str = f"wr{int(latest_win_rate * 100)}"
-            
-            save_dir = os.path.join("model", f"ppo_{color_name}_{timestamp}")
-            os.makedirs(save_dir, exist_ok=True)
-            
-            model_path = os.path.join(save_dir, f"tablut_ppo_{color_name}_{win_rate_str}_ep{episode+1}.pth")
-            torch.save(policy_network.state_dict(), model_path)
-            print(f"Model saved to {model_path}")
-            
-            # Plot and save metrics
-            plot_training_metrics(metrics, save_dir=os.path.join(save_dir, "plots"))
+            # Save model only if it's the best win rate so far
+            if win_rate > best_win_rate:
+                best_win_rate = win_rate
+                color_name = "black" if AGENT_COLOR == Player.BLACK else "white"
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                
+                # Format with win rate (as percentage)
+                win_rate_str = f"wr{int(win_rate * 100)}"
+                
+                save_dir = os.path.join("model", f"ppo_{color_name}_{timestamp}")
+                os.makedirs(save_dir, exist_ok=True)
+                
+                model_path = os.path.join(save_dir, f"tablut_ppo_{color_name}_{win_rate_str}_ep{episode+1}.pth")
+                torch.save(policy_network.state_dict(), model_path)
+                print(f"New best model saved with win rate {win_rate:.2f} to {model_path}")
+                
+                # Plot and save metrics
+                plot_training_metrics(metrics, save_dir=os.path.join(save_dir, "plots"))
 
 if __name__ == "__main__":
     main()
