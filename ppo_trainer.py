@@ -5,6 +5,7 @@ import time
 from datetime import datetime
 from collections import deque
 import matplotlib.pyplot as plt 
+import math
 
 import torch
 import torch.nn as nn
@@ -232,60 +233,53 @@ class TablutPPONetworkEnhanced(nn.Module):
     def __init__(self, in_channels=6):
         super(TablutPPONetworkEnhanced, self).__init__()
         
-        # Increased channel counts and more complex architecture
+        # Convolutional layers with batch normalization
         self.conv1 = nn.Conv2d(in_channels, 32, kernel_size=3, padding=1)
         self.bn1 = nn.BatchNorm2d(32)
         
-        # Residual blocks
-        self.res_block1 = ResidualBlock(32, 64)
-        self.res_block2 = ResidualBlock(64, 64)
-        self.res_block3 = ResidualBlock(64, 32)
+        self.conv2 = nn.Conv2d(32, 64, kernel_size=3, padding=1)
+        self.bn2 = nn.BatchNorm2d(64)
+
+        self.conv3 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
+        self.bn3 = nn.BatchNorm2d(64)
         
-        # Final convolution before flattening
-        self.conv_final = nn.Conv2d(32, 32, kernel_size=3, padding=1)
-        self.bn_final = nn.BatchNorm2d(32)
+        self.conv4 = nn.Conv2d(64, 32, kernel_size=3, padding=1)
+        self.bn4 = nn.BatchNorm2d(32)
         
-        # Number of features after flattening: 32 * 9 * 9 = 2592
-        self.bottleneck = nn.Linear(2592, 256)
+        # Simplified architecture
+        self.bottleneck = nn.Linear(32 * 9 * 9, 256)
         
-        # Policy heads with additional layers
+        # Policy heads
         self.policy_common = nn.Linear(256, 128)
         self.from_head = nn.Linear(128, 81)
         self.to_head = nn.Linear(128, 81)
         
-        # Value head with additional layer
-        self.value_hidden = nn.Linear(256, 128)
-        self.value_head = nn.Linear(128, 1)
+        # Simplified value head
+        self.value_hidden = nn.Linear(256, 64)
+        self.value_head = nn.Linear(64, 1)
         
-        # Dropout for regularization
+        # Reduced dropout
         self.dropout = nn.Dropout(0.1)
     
     def forward(self, x):
-        # Initial convolution
+        # Convolutional layers
         x = F.relu(self.bn1(self.conv1(x)))
-        
-        # Residual blocks
-        x = self.res_block1(x)
-        x = self.res_block2(x)
-        x = self.res_block3(x)
-        
-        # Final convolution
-        x = F.relu(self.bn_final(self.conv_final(x)))
-        
+        x = F.relu(self.bn2(self.conv2(x)))
+        x = F.relu(self.bn3(self.conv3(x)))
+        x = F.relu(self.bn4(self.conv4(x)))
         # Flatten and bottleneck
-        features = x.view(x.size(0), -1)  # (B, 32, 9, 9) -> (B, 2592)
+        features = x.view(x.size(0), -1)
         features = F.relu(self.bottleneck(features))
         features = self.dropout(features)
         
         # Policy branches
         policy_common = F.relu(self.policy_common(features))
-        policy_common = self.dropout(policy_common)
         from_logits = self.from_head(policy_common)
         to_logits = self.to_head(policy_common)
         
-        # Value branch
-        value_hidden = F.relu(self.value_hidden(features))
-        value = self.value_head(value_hidden)
+        # Simplified value branch
+        value = F.relu(self.value_hidden(features))
+        value = self.value_head(value)
         
         return from_logits, to_logits, value
 
@@ -649,66 +643,49 @@ def sample_batch(memory, batch_size):
         'masks': [memory.masks[i] for i in indices]
     }
 
-def count_black_attackers_near_king(game):
-    """Count how many black pieces are adjacent to the king"""
-    # Find king position
-    king_position = None
-    for i in range(9):
-        for j in range(9):
-            if game.board[i][j] == Piece.KING:
-                king_position = (i, j)
-                break
-        if king_position:
-            break
-    
-    if not king_position:
-        return 0  # King already captured
-    
-    # Check adjacent squares for black pieces
-    black_adjacent = 0
-    row, col = king_position
-    directions = [(0, 1), (1, 0), (0, -1), (-1, 0)]
-    
-    for dr, dc in directions:
-        new_row, new_col = row + dr, col + dc
-        if 0 <= new_row < 9 and 0 <= new_col < 9:
-            if game.board[new_row][new_col] == Piece.BLACK:
-                black_adjacent += 1
-    
-    return black_adjacent
-
 def main():
     # Hyperparameters
-    LR = 3e-4
-    GAMMA = 0.99
-    GAE_LAMBDA = 0.9
-    CLIP_RATIO = 0.2
-    VALUE_COEF = 0.5
-    INITIAL_ENTROPY = 0.1
-    FINAL_ENTROPY = 0.001
     MAX_EPISODES = 3000
-    MAX_STEPS_PER_EPISODE = 150
-    UPDATE_FREQ = 512
-    PPO_EPOCHS = 4
+    LR = 1e-4  # Increased learning rate
+    GAMMA = 0.99
+    GAE_LAMBDA = 0.95
+    CLIP_RATIO = 0.2
+    VALUE_COEF = 0.5  # Keep at 0.5
+    
+    # Slower entropy decay
+    INITIAL_ENTROPY = 0.1  # Increased
+    FINAL_ENTROPY = 0.01   # Increased
+    ENTROPY_DECAY_EPISODES = 2000  # Much slower decay
+    
+    # Evaluation parameters
     EVAL_FREQ = 100
-    SAVE_FREQ = 500
-    MIN_BATCH_SIZE = 512
     
-    # Choose which agent to train
-    AGENT_COLOR = Player.BLACK  # Change to Player.WHITE to train white agent
-    
-    # Custom rewards with KING_THREATENED reward
+    # Keep your custom rewards as is
     custom_rewards = {
         'CAPTURE_PIECE': 0.0,
         'KING_CLOSER': 0.0,
-        'KING_THREATENED': 0.0, # Disable
-        'WIN': 10.0,            # Or 1.0
-        'INVALID_MOVE': 0.0,    # Assuming masking works
-        'STEP_PENALTY': -0.01,   # Small penalty
-        'DRAW': 0.0,             # Usually 0 for draw
-        'LOSS': -10.0,           # Or -1.0 (Symmetric to WIN)
+        'KING_THREATENED': 0.0,
+        'WIN': 10.0,
+        'INVALID_MOVE': -0.0,
+        'STEP_PENALTY': -0.02,
+        'DRAW': -0.0,
+        'LOSS': -10.0,
     }
 
+    # Other parameters
+    MAX_STEPS_PER_EPISODE = 100
+    UPDATE_FREQ = 128  # More frequent updates
+    PPO_EPOCHS = 4    # Reduced to prevent overfitting
+    BATCH_SIZE = 64   # Increased from 32
+    MIN_BATCH_SIZE = 128  # Reduced minimum batch size
+    
+    # Temperature annealing
+    INITIAL_TEMP = 2.0  # Increased for more exploration
+    FINAL_TEMP = 0.5    # Increased minimum temperature
+    
+    # Choose which agent to train
+    AGENT_COLOR = Player.WHITE  # Change to Player.WHITE to train white agent
+    
     # Set up device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
@@ -741,13 +718,13 @@ def main():
     total_steps = 0
     total_steps_since_update = 0
     
-    INITIAL_TEMP = 1.0
-    FINAL_TEMP = 0.1
-    
-    # Add this at the beginning of the main function (with other variables)
     best_win_rate = 0.0
     
     for episode in range(MAX_EPISODES):
+        # Modified entropy decay - exponential decay
+        progress = min(episode / ENTROPY_DECAY_EPISODES, 1.0)
+        entropy_coef = FINAL_ENTROPY + (INITIAL_ENTROPY - FINAL_ENTROPY) * math.exp(-5 * progress)
+        
         # Decay learning rate
         if episode < 500:
             lr = LR
@@ -759,9 +736,6 @@ def main():
         obs = env.reset()
         done = False
         episode_reward = 0
-        
-        # Track previous number of black pieces adjacent to king for reward calculation
-        prev_black_attackers = count_black_attackers_near_king(env.game)
         
         while not done:
             # Temperature calculation
@@ -795,7 +769,6 @@ def main():
         # Train when we've collected enough steps
         if total_steps_since_update >= UPDATE_FREQ and len(memory) >= MIN_BATCH_SIZE:
             # Train PPO with accumulated experience
-            entropy_coef = max(FINAL_ENTROPY, INITIAL_ENTROPY * (1 - episode/MAX_EPISODES))
             training_stats = train_ppo(
                 policy_network=policy_network,
                 optimizer=optimizer,
@@ -807,7 +780,8 @@ def main():
                 entropy_coef=entropy_coef,
                 gamma=GAMMA,
                 gae_lambda=GAE_LAMBDA,
-                batch_size=64
+                batch_size=BATCH_SIZE
+
             )
             
             # Store metrics
