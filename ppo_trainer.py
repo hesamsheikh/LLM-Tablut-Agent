@@ -5,6 +5,7 @@ import time
 from datetime import datetime
 from collections import deque
 import matplotlib.pyplot as plt 
+import math
 
 import torch
 import torch.nn as nn
@@ -13,11 +14,259 @@ import torch.optim as optim
 from torch.distributions import Categorical
 
 # Import existing code
-from tablut import TablutGame, Player, Piece
-from rl_agent import TablutEnv, get_valid_action_mask, select_random_valid_action
+from src.tablut import TablutGame, Player, Piece
+
+###############################################################################
+# 1) ENVIRONMENT WRAPPER (SELF-PLAY) WITH REWARD SHAPING
+###############################################################################
+class TablutEnv:
+    """
+    A self-play environment for Tablut, wrapping TablutGame.
+    One agent controls whichever player is 'current_player'.
+    
+    Configurable rewards for various game events.
+    """
+    def __init__(self, move_limit=40, rewards=None, agent_color=None):
+        self.game = TablutGame()
+        self.move_limit = move_limit
+        # 9x9 => 81 squares for "from", 81 squares for "to" => 6561 total discrete actions
+        self.num_actions = 81 * 81
+        # Observations: [Black, White, King, Camp, Escape, Castle]
+        self.obs_shape = (6, 9, 9)
+        
+        # Initialize rewards, use defaults if not specified
+        self.rewards = rewards
+        self.agent_color = agent_color
+            
+        self.reset()
+
+    def reset(self):
+        self.game = TablutGame()
+        self.steps_taken = 0
+        # Add capture counter
+        self.captures_count = 0
+        self._previous_threats = 0  # Track previous number of threats
+        return self._get_observation()
+
+    def step(self, action):
+        """
+        Decode action => (fr, fc, tr, tc), apply it to TablutGame, 
+        compute reward, and return (next_obs, reward, done, info).
+        """
+        from_index = action // 81
+        to_index   = action % 81
+        fr, fc = divmod(from_index, 9)
+        tr, tc = divmod(to_index, 9)
+
+        current_player = self.game.current_player
+        reward = 0.0
+        done = False
+        info = {"invalid_move": False, "captured_pieces": 0, "end_reason": None}
+
+        # ----------------------------
+        # A) Count opponent pieces BEFORE move (for capture reward)
+        # ----------------------------
+        if current_player == Player.WHITE:
+            pieces_before = sum(cell == Piece.BLACK for row in self.game.board for cell in row)
+        else:  # current_player == Player.BLACK
+            pieces_before = sum(cell in [Piece.WHITE, Piece.KING] for row in self.game.board for cell in row)
+
+        # ----------------------------
+        # B) If White, track King distance BEFORE
+        # ----------------------------
+        king_dist_before = None
+        if current_player == Player.WHITE:
+            king_dist_before = self._king_distance_to_closest_escape()
+
+        # Attempt the move
+        success, end_reason = self.game.move_piece(fr, fc, tr, tc)
+        if not success:
+            # Invalid move
+            reward += self.rewards['INVALID_MOVE']
+            info["invalid_move"] = True
+        else:
+            # ----------------------------
+            # C) Capture Reward
+            # ----------------------------
+            # Compare piece counts after move
+            if current_player == Player.WHITE:
+                pieces_after = sum(cell == Piece.BLACK for row in self.game.board for cell in row)
+                if pieces_after < pieces_before:
+                    # at least one black piece was captured
+                    pieces_captured = pieces_before - pieces_after
+                    reward += self.rewards['CAPTURE_PIECE']
+                    self.captures_count += pieces_captured
+                    info["captured_pieces"] = pieces_captured
+            else:
+                pieces_after = sum(cell in [Piece.WHITE, Piece.KING] for row in self.game.board for cell in row)
+                if pieces_after < pieces_before:
+                    # captured a white soldier or the king
+                    pieces_captured = pieces_before - pieces_after
+                    reward += self.rewards['CAPTURE_PIECE']
+                    self.captures_count += pieces_captured
+                    info["captured_pieces"] = pieces_captured
+
+            # ----------------------------
+            # D) King Moves Closer
+            # ----------------------------
+            if success and current_player == Player.WHITE and king_dist_before is not None:
+                king_dist_after = self._king_distance_to_closest_escape()
+                if king_dist_after is not None and king_dist_before is not None:
+                    # If distance decreased
+                    if king_dist_after < king_dist_before:
+                        reward += self.rewards['KING_CLOSER']
+            elif success and current_player == Player.BLACK and king_dist_before is not None:
+                king_dist_after = self._king_distance_to_closest_escape()
+                if king_dist_after is not None and king_dist_before is not None:
+                    # If distance decreased
+                    if king_dist_after < king_dist_before:
+                        reward -= self.rewards['KING_CLOSER']
+
+            # ----------------------------
+            # E) King Threatened Reward
+            # ----------------------------
+            king_pos = None
+            for r in range(9):
+                for c in range(9):
+                    if self.game.board[r][c] == Piece.KING:
+                        king_pos = (r, c)
+                        break
+                if king_pos:
+                    break
+            
+            if king_pos:
+                row, col = king_pos
+                black_adjacent = 0
+                directions = [(0, 1), (1, 0), (0, -1), (-1, 0)]
+                
+                for dr, dc in directions:
+                    new_row, new_col = row + dr, col + dc
+                    if 0 <= new_row < 9 and 0 <= new_col < 9:
+                        if self.game.board[new_row][new_col] == Piece.BLACK:
+                            black_adjacent += 1
+                
+                # Only reward for INCREASING threats
+                if current_player == Player.BLACK and black_adjacent > self._previous_threats:
+                    reward += self.rewards['KING_THREATENED']
+                elif current_player == Player.WHITE and black_adjacent < self._previous_threats:
+                    reward += self.rewards['KING_THREATENED']  # Positive reward for reducing threats
+                
+                self._previous_threats = black_adjacent
+
+            # ----------------------------
+            # F) Check if game ended
+            # ----------------------------
+            if end_reason:
+                info["end_reason"] = end_reason
+                winner = self.game.get_winner()
+                if winner is None:
+                    reward += self.rewards['DRAW']  # draw
+                elif winner == self.agent_color:  # Direct comparison with agent color
+                    reward += self.rewards['WIN']
+                else:
+                    reward += self.rewards['LOSS']
+                done = True
+
+        # Step penalty
+        reward += self.rewards['STEP_PENALTY']
+
+        self.steps_taken += 1
+        if self.steps_taken >= self.move_limit and not done:
+            reward += self.rewards['DRAW']  # treat that as a draw
+            done = True
+            info["end_reason"] = "timeout"
+
+        obs = self._get_observation()
+        return obs, reward, done, info
+
+    def _get_observation(self):
+        import numpy as np
+        board = self.game.board
+        obs = np.zeros(self.obs_shape, dtype=np.float32)
+
+        for r in range(9):
+            for c in range(9):
+                piece = board[r][c]
+                if piece == Piece.BLACK:
+                    obs[0, r, c] = 1.0
+                elif piece == Piece.WHITE:
+                    obs[1, r, c] = 1.0
+                elif piece == Piece.KING:
+                    obs[2, r, c] = 1.0
+                elif piece == Piece.CAMP:
+                    obs[3, r, c] = 1.0
+                elif piece == Piece.ESCAPE:
+                    obs[4, r, c] = 1.0
+                elif piece == Piece.CASTLE:
+                    obs[5, r, c] = 1.0
+        
+        return obs
+
+    def _king_distance_to_closest_escape(self):
+        """
+        Return the Manhattan distance from the King to the closest escape tile,
+        or None if the king isn't on the board.
+        """
+        king_pos = None
+        for r in range(9):
+            for c in range(9):
+                if self.game.board[r][c] == Piece.KING:
+                    king_pos = (r, c)
+                    break
+            if king_pos:
+                break
+
+        if not king_pos:
+            return None  # King is captured or absent
+
+        min_dist = None
+        for (er, ec) in self.game.ESCAPE_TILES:
+            dist = abs(er - king_pos[0]) + abs(ec - king_pos[1])
+            if min_dist is None or dist < min_dist:
+                min_dist = dist
+        return min_dist
+
+###############################################################################
+# 2) ACTION MASKING HELPERS
+###############################################################################
+def get_valid_action_mask(game: TablutGame) -> np.ndarray:
+    """
+    Return a boolean array of shape (6561,) indicating which actions are valid
+    for the current player in 'game'.
+    """
+    mask = np.zeros(6561, dtype=bool)
+    current_player = game.current_player
+
+    for fr in range(9):
+        for fc in range(9):
+            piece = game.board[fr][fc]
+            # Check ownership
+            if current_player == Player.WHITE and piece not in [Piece.WHITE, Piece.KING]:
+                continue
+            if current_player == Player.BLACK and piece != Piece.BLACK:
+                continue
+
+            valid_moves = game.get_valid_moves(fr, fc)  # returns list of (tr, tc)
+            from_idx = fr * 9 + fc
+            for (tr, tc) in valid_moves:
+                to_idx = tr * 9 + tc
+                action_id = from_idx * 81 + to_idx
+                mask[action_id] = True
+
+    return mask
+
+def select_random_valid_action(game: TablutGame):
+    """
+    Return a random valid action from the current player's perspective.
+    """
+    mask = get_valid_action_mask(game)
+    valid_indices = np.where(mask)[0]
+    if len(valid_indices) == 0:
+        return 0
+    return np.random.choice(valid_indices)
 
 class TablutPPONetwork(nn.Module):
-    def __init__(self, in_channels=7, num_actions=81*81):
+    def __init__(self, in_channels=6, num_actions=81*81):
         super(TablutPPONetwork, self).__init__()
         # Shared feature extractor (CNN)
         self.conv1 = nn.Conv2d(in_channels, 32, kernel_size=3, padding=1)
@@ -26,7 +275,8 @@ class TablutPPONetwork(nn.Module):
         self.conv4 = nn.Conv2d(64, 32, kernel_size=3, padding=1)
         
         # Policy head - outputs action probabilities
-        self.policy_head = nn.Linear(2592, num_actions)
+        self.policy_intermediate = nn.Linear(2592, 512)
+        self.policy_head = nn.Linear(512, num_actions)
         
         # Value head - estimates state value
         self.value_head = nn.Linear(2592, 1)
@@ -45,8 +295,9 @@ class TablutPPONetwork(nn.Module):
         x = self.bn4(F.relu(self.conv4(x)))
         features = x.view(x.size(0), -1)  # Flatten: (B, 32, 9, 9) -> (B, 2592)
         
-        # Policy: output logits (pre-softmax)
-        policy_logits = self.policy_head(features)
+        # Policy: output logits (pre-softmax) through intermediate layer
+        policy_hidden = F.relu(self.policy_intermediate(features))
+        policy_logits = self.policy_head(policy_hidden)
         
         # Value: estimate state value
         value = self.value_head(features)
@@ -266,7 +517,7 @@ def plot_training_metrics(metrics, save_dir="./plots"):
     
     print(f"Training plots saved to {save_dir}")
 
-def evaluate_vs_random(policy_network, agent_color, episodes=10, device="cpu", move_limit=150):
+def evaluate_vs_random(policy_network, agent_color, episodes=10, device="cpu", move_limit=150, custom_rewards=None):
     """
     Plays the agent_color side vs. random (which also picks only valid moves).
     Returns fraction of games won by 'agent_color'.
@@ -274,7 +525,7 @@ def evaluate_vs_random(policy_network, agent_color, episodes=10, device="cpu", m
     wins = 0
     end_reasons = []
     for _ in range(episodes):
-        env = TablutEnv(move_limit=move_limit)
+        env = TablutEnv(move_limit=move_limit, rewards=custom_rewards, agent_color=agent_color)
         obs = env.reset()
         done = False
         info = {}
@@ -328,33 +579,6 @@ def sample_batch(memory, batch_size):
         'masks': [memory.masks[i] for i in indices]
     }
 
-def count_black_attackers_near_king(game):
-    """Count how many black pieces are adjacent to the king"""
-    # Find king position
-    king_position = None
-    for i in range(9):
-        for j in range(9):
-            if game.board[i][j] == Piece.KING:
-                king_position = (i, j)
-                break
-        if king_position:
-            break
-    
-    if not king_position:
-        return 0  # King already captured
-    
-    # Check adjacent squares for black pieces
-    black_adjacent = 0
-    row, col = king_position
-    directions = [(0, 1), (1, 0), (0, -1), (-1, 0)]
-    
-    for dr, dc in directions:
-        new_row, new_col = row + dr, col + dc
-        if 0 <= new_row < 9 and 0 <= new_col < 9:
-            if game.board[new_row][new_col] == Piece.BLACK:
-                black_adjacent += 1
-    
-    return black_adjacent
 
 def main():
     # Hyperparameters
@@ -372,15 +596,14 @@ def main():
     EVAL_FREQ = 100
     SAVE_FREQ = 500
     MIN_BATCH_SIZE = 512
-    
+    BATCH_SIZE = 64
     # Choose which agent to train
-    AGENT_COLOR = Player.WHITE  # Change to Player.WHITE to train white agent
+    AGENT_COLOR = Player.BLACK  # Change to Player.WHITE to train white agent
     
-    # Custom rewards with KING_THREATENED reward
     custom_rewards = {
-        'CAPTURE_PIECE': 0.0,
+        'CAPTURE_PIECE': 0.5,
         'KING_CLOSER': 0.0,
-        'KING_THREATENED': 0.0, # Disable
+        'KING_THREATENED': 0.8, # Disable
         'WIN': 10.0,            # Or 1.0
         'INVALID_MOVE': 0.0,    # Assuming masking works
         'STEP_PENALTY': -0.01,   # Small penalty
@@ -392,10 +615,10 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
     # Create environment
-    env = TablutEnv(move_limit=MAX_STEPS_PER_EPISODE, rewards=custom_rewards)
+    env = TablutEnv(move_limit=MAX_STEPS_PER_EPISODE, rewards=custom_rewards, agent_color=AGENT_COLOR)
     
     # Create policy network
-    policy_network = TablutPPONetwork().to(device)
+    policy_network = TablutPPONetwork(in_channels=6).to(device)
     
     # Count and print trainable parameters
     total_params = sum(p.numel() for p in policy_network.parameters() if p.requires_grad)
@@ -436,8 +659,6 @@ def main():
         done = False
         episode_reward = 0
         
-        # Track previous number of black pieces adjacent to king for reward calculation
-        prev_black_attackers = count_black_attackers_near_king(env.game)
         
         while not done:
             # Temperature calculation
@@ -461,13 +682,9 @@ def main():
                 # Opponent makes a random move
                 action = select_random_valid_action(env.game)
                 next_obs, reward, done, info = env.step(action)
-                
-                # Don't count opponent's rewards in episode total
-                # Don't store opponent's actions in memory
             
             # Update state
             obs = next_obs
-            prev_black_attackers = count_black_attackers_near_king(env.game)
         
         # Train when we've collected enough steps
         if total_steps_since_update >= UPDATE_FREQ and len(memory) >= MIN_BATCH_SIZE:
@@ -484,7 +701,7 @@ def main():
                 entropy_coef=entropy_coef,
                 gamma=GAMMA,
                 gae_lambda=GAE_LAMBDA,
-                batch_size=64
+                batch_size=BATCH_SIZE
             )
             
             # Store metrics
@@ -513,23 +730,25 @@ def main():
         # Evaluation
         if (episode + 1) % EVAL_FREQ == 0:
             print("Evaluating performance vs. random player...")
-            win_rate = evaluate_vs_random(policy_network, AGENT_COLOR, episodes=20, device=device, 
-                                         move_limit=MAX_STEPS_PER_EPISODE)
+            win_rate = evaluate_vs_random(policy_network, AGENT_COLOR, episodes=100, device=device, 
+                                         move_limit=MAX_STEPS_PER_EPISODE, custom_rewards=custom_rewards)
             metrics['win_rates'].append(win_rate)
             print(f"  Win Rate: {win_rate:.2f}")
-        
-        # Save model
-        if (episode + 1) % SAVE_FREQ == 0:
-            color_name = "black" if AGENT_COLOR == Player.BLACK else "white"
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            save_dir = os.path.join("model", f"ppo_{color_name}_{timestamp}")
-            os.makedirs(save_dir, exist_ok=True)
-            model_path = os.path.join(save_dir, f"tablut_ppo_{color_name}_ep{episode+1}.pth")
-            torch.save(policy_network.state_dict(), model_path)
-            print(f"Model saved to {model_path}")
+
+            best_win_rate = max(metrics['win_rates'][:-1], default=0)
             
-            # Plot and save metrics
-            plot_training_metrics(metrics, save_dir=os.path.join(save_dir, "plots"))
+            if win_rate >= best_win_rate:
+                color_name = "black" if AGENT_COLOR == Player.BLACK else "white"
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                save_dir = os.path.join("model", f"ppo_{color_name}_{timestamp}")
+                os.makedirs(save_dir, exist_ok=True)
+                model_path = os.path.join(save_dir, f"tablut_ppo_{color_name}_wr{win_rate*100:.0f}_ep{episode+1}.pth")
+                torch.save(policy_network.state_dict(), model_path)
+                print(f"New best model (win rate: {win_rate:.2f}) saved to {model_path}")
+                
+                # Plot and save metrics
+                plot_training_metrics(metrics, save_dir=os.path.join(save_dir, "plots"))
+
 
 if __name__ == "__main__":
     main()

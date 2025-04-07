@@ -1,8 +1,8 @@
 import torch
 import numpy as np
-from tablut import TablutGame, Player
-from utils import GameVisualizer, PlayerType
-from ppo_trainer import TablutPPONetworkEnhanced, select_action, TablutEnv
+from src.tablut import TablutGame, Player
+from src.utils import GameVisualizer, PlayerType
+from ppo_trainer import TablutPPONetwork, select_action, TablutEnv, get_valid_action_mask
 
 def ppo_agent_move(game: TablutGame, model, device="cuda", temperature=0.1):
     """Move callback for PPO agent"""
@@ -13,8 +13,22 @@ def ppo_agent_move(game: TablutGame, model, device="cuda", temperature=0.1):
     # Get observation
     obs = env._get_observation()
     
-    # Select action using the model - use a lower temperature for more decisive moves
-    action, _, _, _ = select_action(obs, env, model, device, evaluate=True, temperature=temperature)
+    # Get valid action mask
+    valid_mask = get_valid_action_mask(game)
+    valid_mask_tensor = torch.BoolTensor(valid_mask).to(device)
+    
+    # Forward pass through network
+    state_tensor = torch.FloatTensor(obs).unsqueeze(0).to(device)
+    with torch.no_grad():
+        policy_logits, _ = model(state_tensor)
+        
+        # Apply temperature and masking
+        policy_logits = policy_logits.squeeze(0) / temperature
+        policy_logits[~valid_mask_tensor] = float('-inf')
+        action_probs = torch.softmax(policy_logits, dim=0)
+        
+        # Get best action
+        action = torch.argmax(action_probs).item()
     
     # Convert action to board coordinates
     from_pos = action // 81
@@ -33,9 +47,9 @@ def ppo_agent_move(game: TablutGame, model, device="cuda", temperature=0.1):
 
 def main():
     # Configuration (edit these values directly)
-    model_path = r"model\ppo_white_20250406_230943\tablut_ppo_white_wr97_ep2500.pth"  # Check this path!
+    model_path = r"model\ppo_white_20250407_225550\tablut_ppo_white_wr97_ep2700.pth"  # Check this path!
     play_as = "black"  # "white" or "black"
-    temperature = 1.0  # Lower temperature = more optimal moves (try 0.1)
+    temperature = 0.1  # Lower temperature = more optimal moves
     use_cpu = False  # Set to True to force CPU usage
     
     # Set up device
@@ -43,7 +57,7 @@ def main():
     print(f"Using device: {device}")
     
     # Create and load the model
-    model = TablutPPONetworkEnhanced().to(device)
+    model = TablutPPONetwork(in_channels=6).to(device)  # Changed to 6 channels to match TablutEnv
     try:
         model.load_state_dict(torch.load(model_path, map_location=device))
         print(f"Loaded model from {model_path}")

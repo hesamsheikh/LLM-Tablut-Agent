@@ -1,5 +1,5 @@
-from tablut import TablutGame
-from utils import GameVisualizer, Player, PlayerType
+from src.tablut import TablutGame
+from src.utils import GameVisualizer, Player, PlayerType
 
 if __name__ == "__main__":
     game = TablutGame()

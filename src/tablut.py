@@ -2,7 +2,7 @@ import pygame
 import json
 from datetime import datetime
 from typing import List, Tuple, Optional, Dict, Set
-from utils import Piece, Player, GameVisualizer, ArchiveManager, PlayerType
+from src.utils import Piece, Player, GameVisualizer, ArchiveManager, PlayerType
 import asyncio
 
 class TablutGame:
@@ -135,7 +135,7 @@ class TablutGame:
         
     def _board_to_string(self):
         """Convert current board state to string for comparison"""
-        return ''.join(piece.value for row in self.board for piece in row)
+        return '\n'.join(''.join(piece.value for piece in row) for row in self.board)
         
     def _update_state_count(self):
         """Update the count of the current board state"""
@@ -306,7 +306,7 @@ class TablutGame:
                 elif self.state_count.get(self._board_to_string(), 0) >= 3:
                     reason = "Draw - Repeated position"
                 
-                self.archive_manager.save_game(winner, is_draw, description=reason)
+                # self.archive_manager.save_game(winner, is_draw, description=reason)
                 return True, reason  # Return the reason with success
             
             return True, None
