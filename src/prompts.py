@@ -19,12 +19,20 @@ Board Legend:
 - #: Camp tiles (Black's starting positions)
 - .: Empty space
 
+IMPORTANT OWNERSHIP RULES:
+1. You can ONLY move your own pieces. 
+   - If you are BLACK, you can only move B pieces
+   - If you are WHITE, you can only move W pieces and the K (King)
+2. Always verify piece ownership before attempting a move
+3. When an invalid move is reported, try a completely different piece or direction
+4. Empty spaces, escape tiles, and castle tiles are not movable pieces
+
 Initial Board Layout:
 .**BBB**.
 *...B...*
-*..WW...*
+*...W...*
 B...W...B
-BBW.KWWBB
+BBWWKWWBB
 B...W...B
 *...W...*
 *...B...*
@@ -95,8 +103,8 @@ For Black:
 
 Notes:
 - Coordinates are zero-based (0-8)
-- Only the JSON object should be in your response, no other text
 - The reasoning should explain both immediate tactical goals and longer-term strategic plans
+- If your move is invalid, examine the error message carefully and choose a completely different move
 """
 
 MOVE_PROMPT = """
@@ -106,7 +114,12 @@ Current board state (9x9):
 You are playing as {current_player}.
 Move count: {move_count}
 
-Provide your move as a JSON object following the specified format.
+REMINDER:
+- As {current_player}, you can only move {current_player} pieces
+- BLACK players can only move B pieces
+- WHITE players can move W pieces and the K (King)
+
+Provide your move as a JSON object following the specified format. Think step by step, ensure the piece you are moving is owned by {current_player}, and the move is valid.
 """
 
 def format_move_prompt(board_str, current_player, move_count):

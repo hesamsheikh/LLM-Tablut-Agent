@@ -60,14 +60,32 @@ class LLMPlayer:
         """Get next move from LLM"""
         if not self.game:
             raise ValueError("Game not set. Call set_game() first.")
-            
-        prompt = self._board_to_prompt()
         
-        # Add current state to history
-        self.message_history.append({
-            "role": "system",
-            "content": f"Game state:\n{self.game._board_to_string()}"
-        })
+        # Get and record opponent's last move if available
+        opponent = Player.BLACK if self.game.current_player == Player.WHITE else Player.WHITE
+        opponent_move = self.game.get_last_move(opponent)
+        
+        if opponent_move:
+            from_pos = opponent_move['from']
+            to_pos = opponent_move['to']
+            piece_type = opponent_move['piece'].value
+            
+            # Add opponent move to message history
+            opponent_move_msg = {
+                "role": "system",
+                "content": json.dumps({
+                    "opponent_move": f"[{from_pos[0]},{from_pos[1]}] to [{to_pos[0]},{to_pos[1]}]",
+                    "piece": piece_type,
+                    "player": opponent.value
+                }, indent=2)
+            }
+            
+            # Add to history if not already there
+            if not self.message_history or "opponent_move" not in self.message_history[-1]['content']:
+                self.message_history.append(opponent_move_msg)
+        
+        # Generate the prompt with current board state
+        prompt = self._board_to_prompt()
         
         try:
             # Create messages list including history
@@ -75,12 +93,12 @@ class LLMPlayer:
                 {"role": "system", "content": self.system_prompt}
             ]
             
-            # Add relevant history (last few moves and any error messages)
-            # We'll limit to last 4 exchanges to keep context focused
-            relevant_history = self.message_history[-8:]  # Last 4 moves (each move has 2 messages)
-            messages.extend(relevant_history)
+            # Add relevant history (last few exchanges to keep context focused)
+            if len(self.message_history) > 0:
+                relevant_history = self.message_history[-6:]  # Last 3 moves (2 messages per move)
+                messages.extend(relevant_history)
             
-            # Add current prompt
+            # Add current prompt (which includes the board state)
             messages.append({"role": "user", "content": prompt})
             
             # Get response from Ollama with temperature and history
@@ -157,10 +175,17 @@ def llm_move_callback(game: TablutGame) -> str:
     if success:
         return f"LLM moved from ({from_row},{from_col}) to ({to_row},{to_col})"
     else:
-        # Add invalid move to history
+        # Add more detailed invalid move information to history
         player.message_history.append({
             "role": "system",
-            "content": f"Invalid move: {error}"
+            "content": json.dumps({
+                "invalid_move": {
+                    "from": [from_row, from_col],
+                    "to": [to_row, to_col]
+                },
+                "error": error,
+                "explanation": f"The move from [{from_row},{from_col}] to [{to_row},{to_col}] is invalid because: {error}. Please choose a different move with your own pieces."
+            }, indent=2)
         })
         return f"LLM attempted invalid move: {error}"
 

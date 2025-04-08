@@ -47,6 +47,12 @@ class TablutGame:
         
         # Add move counter
         self.move_count = 0
+        
+        # Add last move tracking
+        self.last_move = {
+            Player.WHITE: None,
+            Player.BLACK: None
+        }
 
     def set_move_callback(self, callback, player: Player):
         """Set a callback function to be called when it's the specified player's turn
@@ -270,6 +276,14 @@ class TablutGame:
             # Increment move counter
             self.move_count += 1
             
+            # Store last move
+            self.last_move[moving_player] = {
+                "from": (from_row, from_col),
+                "to": (to_row, to_col),
+                "piece": piece,
+                "move_count": self.move_count
+            }
+            
             # Check for captures after move
             self.check_captures(to_row, to_col, moving_player)
             
@@ -457,7 +471,32 @@ class TablutGame:
         visualizer = GameVisualizer()
         visualizer.draw_game_state(screen, self, selected_piece, valid_moves)
 
-    
+    def get_last_move(self, player: Player = None) -> Optional[dict]:
+        """
+        Get the last move made by the specified player.
+        
+        Args:
+            player: The player whose move to return. If None, returns the most recent move.
+        
+        Returns:
+            dict: Contains 'from', 'to', 'piece', and 'move_count' if a move exists, otherwise None
+        """
+        if player is not None:
+            return self.last_move[player]
+        
+        # If no player specified, return the most recent move based on move_count
+        white_move = self.last_move[Player.WHITE]
+        black_move = self.last_move[Player.BLACK]
+        
+        if white_move is None and black_move is None:
+            return None
+        elif white_move is None:
+            return black_move
+        elif black_move is None:
+            return white_move
+        
+        # Return the move with the higher move_count
+        return white_move if white_move['move_count'] > black_move['move_count'] else black_move
 
 
 if __name__ == "__main__":
