@@ -1,99 +1,148 @@
 import ollama
+import json
 from typing import List, Tuple, Optional
 from src.tablut import TablutGame, Player, Piece
+from src.prompts import SYSTEM_PROMPT, MOVE_PROMPT
+from src.utils import GameVisualizer, PlayerType
 
 class LLMPlayer:
-    def __init__(self, model_name: str = "mistral"):
-        """Initialize LLM player with specified model"""
+    def __init__(self, model_name: str = "gemma3:1b", temperature: float = 0.7):
+        """Initialize LLM player with specified model and temperature"""
         self.model = model_name
+        self.temperature = temperature
         self.message_history = []
+        self.system_prompt = SYSTEM_PROMPT
+        self.move_prompt = MOVE_PROMPT
+        self.game = None
         
-        # Configurable rules string
-        self.rules = """
-        Tablut Rules:
-        1. The game is played on a 9x9 board
-        2. White controls the King (K) and white pieces (W)
-        3. Black controls the black pieces (B)
-        4. The goal for White is to help the King escape to any corner tile
-        5. The goal for Black is to capture the King
-        6. Pieces move orthogonally (like rooks in chess)
-        7. Pieces cannot jump over other pieces
-        8. Captures occur by sandwiching enemy pieces between two of your pieces
-        9. The King is captured by surrounding it on all four sides (or 3 sides if against the castle)
-        10. Special tiles:
-            - Castle (C): Center tile, only King can occupy it
-            - Camps (X): Black pieces can move through these
-            - Escape (E): Corner tiles where King can escape
-        """
+    def set_game(self, game: TablutGame):
+        """Set the game instance for this player"""
+        self.game = game
         
-    def _board_to_prompt(self, game: TablutGame) -> str:
+    def _board_to_prompt(self) -> str:
         """Convert current board state to a prompt for the LLM"""
-        board_str = game._board_to_string()
-        current_player = game.current_player.value
-        
-        prompt = f"""
-        Current board state (9x9):
-        {board_str}
-        
-        Legend:
-        - W: White piece
-        - B: Black piece
-        - K: King
-        - E: Escape tile
-        - C: Castle
-        - X: Camp
-        - .: Empty space
-        
-        You are playing as {current_player}.
-        Provide your next move in the format: from_row,from_col to_row,to_col
-        For example: "4,4 to 4,7" moves a piece from position (4,4) to (4,7)
-        
-        What is your next move?
-        """
-        return prompt
+        board_str = self.game._board_to_string()
+        current_player = self.game.current_player.value
+        move_count = self.game.move_count
 
-    def get_move(self, game: TablutGame) -> Tuple[Tuple[int, int], Tuple[int, int]]:
+        return self.format_move_prompt(board_str, current_player, move_count)
+
+    def _extract_json_from_response(self, response_text: str) -> str:
+        """Extract JSON from response that might be wrapped in markdown code blocks."""
+        # Check if response is wrapped in code blocks
+        if "```json" in response_text:
+            # Extract content between ```json and ```
+            start = response_text.find("```json") + 7
+            end = response_text.find("```", start)
+            if end != -1:
+                return response_text[start:end].strip()
+        # If no code blocks, return as is
+        return response_text.strip()
+
+    def format_move_prompt(self, board_str, current_player, move_count):
+        """Format the move prompt with current game state.
+        
+        Args:
+            game (TablutGame): Current game state
+            last_move (str, optional): Not used in current prompt
+            captured_pieces (str, optional): Not used in current prompt
+        
+        Returns:
+            str: Formatted move prompt
+        """
+        return self.move_prompt.format(
+            board_str=board_str,
+            current_player=current_player,
+            move_count=move_count
+        )
+    
+    def get_move(self) -> Tuple[Tuple[int, int], Tuple[int, int]]:
         """Get next move from LLM"""
-        prompt = self._board_to_prompt(game)
+        if not self.game:
+            raise ValueError("Game not set. Call set_game() first.")
+            
+        prompt = self._board_to_prompt()
         
         # Add current state to history
         self.message_history.append({
             "role": "system",
-            "content": f"Game state:\n{game._board_to_string()}"
+            "content": f"Game state:\n{self.game._board_to_string()}"
         })
         
         try:
-            # Get response from Ollama
-            response = ollama.chat(model=self.model, messages=[
-                {"role": "system", "content": self.rules},
-                {"role": "user", "content": prompt}
-            ])
+            # Create messages list including history
+            messages = [
+                {"role": "system", "content": self.system_prompt}
+            ]
             
-            move_str = response['message']['content']
+            # Add relevant history (last few moves and any error messages)
+            # We'll limit to last 4 exchanges to keep context focused
+            relevant_history = self.message_history[-8:]  # Last 4 moves (each move has 2 messages)
+            messages.extend(relevant_history)
             
-            # Add LLM response to history
-            self.message_history.append({
-                "role": "assistant",
-                "content": move_str
-            })
+            # Add current prompt
+            messages.append({"role": "user", "content": prompt})
             
-            # Parse move from response
-            # Expected format: "from_row,from_col to_row,to_col"
-            from_pos, to_pos = move_str.split(" to ")
-            from_row, from_col = map(int, from_pos.strip().split(","))
-            to_row, to_col = map(int, to_pos.strip().split(","))
+            # Get response from Ollama with temperature and history
+            response = ollama.chat(
+                model=self.model,
+                messages=messages,
+                options={"temperature": self.temperature}
+            )
             
-            return (from_row, from_col), (to_row, to_col)
-            
+            # Extract and parse JSON response
+            try:
+                response_content = self._extract_json_from_response(response['message']['content'])
+                move_data = json.loads(response_content)
+                
+                # Extract move coordinates
+                from_pos = move_data['move']['from']
+                to_pos = move_data['move']['to']
+                reasoning = move_data['reasoning']
+                
+                # Add LLM response to history with reasoning
+                self.message_history.append({
+                    "role": "assistant",
+                    "content": json.dumps({
+                        "move": f"[{from_pos[0]},{from_pos[1]}] to [{to_pos[0]},{to_pos[1]}]",
+                        "reasoning": reasoning
+                    }, indent=2)
+                })
+                
+                return (from_pos[0], from_pos[1]), (to_pos[0], to_pos[1])
+                
+            except json.JSONDecodeError as e:
+                print(f"Error parsing LLM response as JSON: {e}")
+                print(f"Raw response: {response['message']['content']}")
+                return None
+                
         except Exception as e:
             print(f"Error getting move from LLM: {e}")
-            # Return None to indicate failure
             return None
+
+# Create a global instance for each player color
+white_player = None
+black_player = None
 
 def llm_move_callback(game: TablutGame) -> str:
     """Callback function for LLM player moves"""
-    player = LLMPlayer()
-    move = player.get_move(game)
+    global white_player, black_player
+    
+    # Initialize the appropriate player if not already done
+    if game.current_player == Player.WHITE:
+        if white_player is None:
+            white_player = LLMPlayer()
+        player = white_player
+    else:
+        if black_player is None:
+            black_player = LLMPlayer()
+        player = black_player
+    
+    # Set the game instance
+    player.set_game(game)
+    
+    # Get the move
+    move = player.get_move()
     
     if move is None:
         return "LLM failed to provide a valid move"
@@ -115,14 +164,50 @@ def llm_move_callback(game: TablutGame) -> str:
         })
         return f"LLM attempted invalid move: {error}"
 
-# Example usage:
-if __name__ == "__main__":
+def play_game(llm_color: str = "BLACK", model_name: str = "gemma3:1b", temperature: float = 0.7):
+    """
+    Start a game with LLM playing as the specified color.
+    
+    Args:
+        llm_color: "WHITE" or "BLACK" (default: "BLACK")
+        model_name: Name of the LLM model to use (default: "gemma3:1b")
+        temperature: Sampling temperature for LLM (default: 0.7)
+    """
     game = TablutGame()
     
-    # Set up LLM as black player
-    game.set_move_callback(llm_move_callback, Player.BLACK)
+    # Convert string color to Player enum
+    llm_player = Player.WHITE if llm_color.upper() == "WHITE" else Player.BLACK
     
-    # Run game with GUI for white player and LLM for black
-    from src.utils import GameVisualizer, PlayerType
+    # Set up LLM as the specified player
+    game.set_move_callback(llm_move_callback, llm_player)
+    
+    # Configure player types for visualizer
+    white_type = PlayerType.LLM if llm_player == Player.WHITE else PlayerType.GUI
+    black_type = PlayerType.LLM if llm_player == Player.BLACK else PlayerType.GUI
+    
+    # Initialize the LLM player with specified model and temperature
+    global white_player, black_player
+    if llm_player == Player.WHITE:
+        white_player = LLMPlayer(model_name, temperature)
+    else:
+        black_player = LLMPlayer(model_name, temperature)
+    
+    # Run game with appropriate configuration
     visualizer = GameVisualizer()
-    visualizer.run(game, white_player_type=PlayerType.GUI, black_player_type=PlayerType.LLM)
+    visualizer.run(game, white_player_type=white_type, black_player_type=black_type)
+
+if __name__ == "__main__":
+    import argparse
+    
+    parser = argparse.ArgumentParser(description='Play Tablut against an LLM')
+    parser.add_argument('--color', type=str, choices=['WHITE', 'BLACK'], 
+                       default='BLACK', help='Color for the LLM to play as')
+    parser.add_argument('--model', type=str, default='gemma3:4b',
+                       help='Name of the LLM model to use')
+    parser.add_argument('--temperature', type=float, default=0.7,
+                       help='Sampling temperature for LLM (0.0 to 1.0)')
+    
+    args = parser.parse_args()
+    
+    print(f"Starting game with LLM ({args.model}) playing as {args.color} (temperature: {args.temperature})")
+    play_game(llm_color=args.color, model_name=args.model, temperature=args.temperature)
