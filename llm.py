@@ -95,7 +95,7 @@ class LLMPlayer:
             
             # Add relevant history (last few exchanges to keep context focused)
             if len(self.message_history) > 0:
-                relevant_history = self.message_history[-6:]  # Last 3 moves (2 messages per move)
+                relevant_history = self.message_history  # use full message history
                 messages.extend(relevant_history)
             
             # Add current prompt (which includes the board state)
@@ -184,7 +184,8 @@ def llm_move_callback(game: TablutGame) -> str:
                     "to": [to_row, to_col]
                 },
                 "error": error,
-                "explanation": f"The move from [{from_row},{from_col}] to [{to_row},{to_col}] is invalid because: {error}. Please choose a different move with your own pieces."
+                "explanation": f"""The move from [{from_row},{from_col}] to [{to_row},{to_col}] is invalid because: {error}.
+Please choose a different move with your own pieces."""
             }, indent=2)
         })
         return f"LLM attempted invalid move: {error}"
