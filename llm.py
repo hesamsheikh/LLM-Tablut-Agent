@@ -19,13 +19,18 @@ class LLMPlayer:
         """Set the game instance for this player"""
         self.game = game
         
-    def _board_to_prompt(self) -> str:
-        """Convert current board state to a prompt for the LLM"""
+    def _board_to_prompt(self, opponent_move_str: str = "") -> str:
+        """Convert current board state to a prompt for the LLM, including opponent's move if any"""
         board_str = self.game._board_to_string()
         current_player = self.game.current_player.value
         move_count = self.game.move_count
 
-        return self.format_move_prompt(board_str, current_player, move_count)
+        return self.format_move_prompt(
+            board_str=board_str,
+            current_player=current_player,
+            move_count=move_count,
+            opponent_move=opponent_move_str
+        )
 
     def _extract_json_from_response(self, response_text: str) -> str:
         """Extract JSON from response that might be wrapped in markdown code blocks."""
@@ -39,18 +44,10 @@ class LLMPlayer:
         # If no code blocks, return as is
         return response_text.strip()
 
-    def format_move_prompt(self, board_str, current_player, move_count):
-        """Format the move prompt with current game state.
-        
-        Args:
-            game (TablutGame): Current game state
-            last_move (str, optional): Not used in current prompt
-            captured_pieces (str, optional): Not used in current prompt
-        
-        Returns:
-            str: Formatted move prompt
-        """
+    def format_move_prompt(self, board_str, current_player, move_count, opponent_move=""):
+        """Format the move prompt with current game state."""
         return self.move_prompt.format(
+            opponent_move=opponent_move,
             board_str=board_str,
             current_player=current_player,
             move_count=move_count
@@ -61,31 +58,18 @@ class LLMPlayer:
         if not self.game:
             raise ValueError("Game not set. Call set_game() first.")
         
-        # Get and record opponent's last move if available
+        # Get opponent's last move if available
         opponent = Player.BLACK if self.game.current_player == Player.WHITE else Player.WHITE
         opponent_move = self.game.get_last_move(opponent)
+        opponent_move_str = ""
         
         if opponent_move:
             from_pos = opponent_move['from']
             to_pos = opponent_move['to']
-            piece_type = opponent_move['piece'].value
-            
-            # Add opponent move to message history
-            opponent_move_msg = {
-                "role": "system",
-                "content": json.dumps({
-                    "opponent_move": f"[{from_pos[0]},{from_pos[1]}] to [{to_pos[0]},{to_pos[1]}]",
-                    "piece": piece_type,
-                    "player": opponent.value
-                }, indent=2)
-            }
-            
-            # Add to history if not already there
-            if not self.message_history or "opponent_move" not in self.message_history[-1]['content']:
-                self.message_history.append(opponent_move_msg)
-        
-        # Generate the prompt with current board state
-        prompt = self._board_to_prompt()
+            opponent_move_str = f"I moved from [{from_pos[0]},{from_pos[1]}] to [{to_pos[0]},{to_pos[1]}]. "
+
+        # Generate the prompt with current board state and opponent move
+        prompt = self._board_to_prompt(opponent_move_str)
         
         try:
             # Create messages list including history
@@ -98,7 +82,7 @@ class LLMPlayer:
                 relevant_history = self.message_history  # use full message history
                 messages.extend(relevant_history)
             
-            # Add current prompt (which includes the board state)
+            # Add current prompt (which includes the board state and opponent move)
             messages.append({"role": "user", "content": prompt})
             
             # Get response from Ollama with temperature and history
@@ -225,7 +209,7 @@ def play_game(llm_color: str = "BLACK", model_name: str = "gemma3:1b", temperatu
 if __name__ == "__main__":
     # Hardcoded configuration values instead of argparse
     color = 'BLACK'  # Options: 'WHITE' or 'BLACK'
-    model = 'gemma3:4b'
+    model = 'deepseek-r1:7b'
     temperature = 0.7
     
     print(f"Starting game with LLM ({model}) playing as {color} (temperature: {temperature})")

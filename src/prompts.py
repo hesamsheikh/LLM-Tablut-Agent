@@ -19,13 +19,9 @@ Board Legend:
 - #: Camp tiles (Black's starting positions)
 - .: Empty space
 
-IMPORTANT OWNERSHIP RULES:
-1. You can ONLY move your own pieces. 
-   - If you are BLACK, you can only move B pieces
-   - If you are WHITE, you can only move W pieces and the K (King)
-2. Always verify piece ownership before attempting a move
-3. When an invalid move is reported, try a completely different piece or direction
-4. Empty spaces, escape tiles, and castle tiles are not movable pieces
+- If you are BLACK, you can only move B pieces
+- If you are WHITE, you can only move W pieces and the K (King)
+- When an invalid move is reported, try a completely different piece or direction
 
 Initial Board Layout:
 .**BBB**.
@@ -40,14 +36,12 @@ B...W...B
 
 Movement Rules:
 1. Basic Movement:
-   - All pieces move like rooks in chess (orthogonally only)
+   - All pieces move orthogonally only
    - No jumping over other pieces
-   - Must move at least one square
-   - Cannot move diagonally
+   - Cannot move empty square
+   - Cannot move into another piece's position
 
 2. Special Rules:
-   - White pieces (including King) cannot move through occupied spaces
-   - Black pieces cannot move through occupied spaces
    - Only the King can stop on the castle (C)
    - White pieces can not stop on camp tiles (#)
 
@@ -61,15 +55,12 @@ Movement Rules:
 Strategic Guidelines:
 White Strategy:
 - Protect the King while moving towards escape tiles (*)
-- Use soldiers to clear path and prevent encirclement
+- Use soldiers to clear path and prevent King from being captured
 - Watch for sandwiching opportunities against Black pieces
-- Keep escape routes open
 
 Black Strategy:
 - Cut off King's escape routes
-- Use strategic positioning to control key areas
 - Try to surround the King
-- Prevent White from creating safe corridors
 
 Response Format:
 You must respond with a JSON object containing:
@@ -81,48 +72,21 @@ You must respond with a JSON object containing:
     "reasoning": "Explain your strategic thinking, including immediate goals and long-term plans"
 }
 
-Example responses:
-
-For White:
-{
-    "move": {
-        "from": [4, 4],
-        "to": [4, 7]
-    },
-    "reasoning": "Moving King towards northeast escape tile while maintaining protection from white soldiers. Planning to create a corridor through the northern edge in the next few moves."
-}
-
-For Black:
-{
-    "move": {
-        "from": [0, 4],
-        "to": [3, 4]
-    },
-    "reasoning": "Positioning piece to block King's northern escape route. Part of a broader strategy to force the King westward where we have stronger piece control."
-}
-
 Notes:
 - Coordinates are zero-based (0-8)
 - The reasoning should explain both immediate tactical goals and longer-term strategic plans
 - If your move is invalid, examine the error message carefully and choose a completely different move
 """
 
-MOVE_PROMPT = """
+MOVE_PROMPT = """{opponent_move}
 Current board state (9x9):
 {board_str}
 
 You are playing as {current_player}.
 Move count: {move_count}
+Now it your turn."""
 
-REMINDER:
-- As {current_player}, you can only move {current_player} pieces
-- BLACK players can only move B pieces
-- WHITE players can move W pieces and the K (King)
-
-Provide your move as a JSON object following the specified format. Think step by step, ensure the piece you are moving is owned by {current_player}, and the move is valid.
-"""
-
-def format_move_prompt(board_str, current_player, move_count):
+def format_move_prompt(board_str, current_player, move_count, opponent_move=""):
     """Format the move prompt with current game state.
     
     Args:
@@ -136,5 +100,6 @@ def format_move_prompt(board_str, current_player, move_count):
     return MOVE_PROMPT.format(
         board_str=board_str,
         current_player=current_player,
-        move_count=move_count
+        move_count=move_count,
+        opponent_move=opponent_move,
     )
