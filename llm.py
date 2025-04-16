@@ -222,17 +222,10 @@ def play_game(llm_color: str = "BLACK", model_name: str = "gemma3:1b", temperatu
     visualizer.run(game, white_player_type=white_type, black_player_type=black_type)
 
 if __name__ == "__main__":
-    import argparse
+    # Hardcoded configuration values instead of argparse
+    color = 'BLACK'  # Options: 'WHITE' or 'BLACK'
+    model = 'gemma3:4b'
+    temperature = 0.7
     
-    parser = argparse.ArgumentParser(description='Play Tablut against an LLM')
-    parser.add_argument('--color', type=str, choices=['WHITE', 'BLACK'], 
-                       default='BLACK', help='Color for the LLM to play as')
-    parser.add_argument('--model', type=str, default='gemma3:4b',
-                       help='Name of the LLM model to use')
-    parser.add_argument('--temperature', type=float, default=0.7,
-                       help='Sampling temperature for LLM (0.0 to 1.0)')
-    
-    args = parser.parse_args()
-    
-    print(f"Starting game with LLM ({args.model}) playing as {args.color} (temperature: {args.temperature})")
-    play_game(llm_color=args.color, model_name=args.model, temperature=args.temperature)
+    print(f"Starting game with LLM ({model}) playing as {color} (temperature: {temperature})")
+    play_game(llm_color=color, model_name=model, temperature=temperature)
