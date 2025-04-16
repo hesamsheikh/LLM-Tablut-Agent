@@ -10,10 +10,13 @@ class LLMPlayer:
         """Initialize LLM player with specified model and temperature"""
         self.model = model_name
         self.temperature = temperature
-        self.message_history = []
         self.system_prompt = SYSTEM_PROMPT
         self.move_prompt = MOVE_PROMPT
         self.game = None
+        # Initialize message history with system prompt
+        self.message_history = [
+            {"role": "system", "content": self.system_prompt}
+        ]
         
     def set_game(self, game: TablutGame):
         """Set the game instance for this player"""
@@ -70,25 +73,17 @@ class LLMPlayer:
 
         # Generate the prompt with current board state and opponent move
         prompt = self._board_to_prompt(opponent_move_str)
+    
+        # Add current prompt to history if it's not already there   
+        message_contents = [m["content"] for m in self.message_history]
+        if prompt not in message_contents:
+            self.message_history.append({"role": "user", "content": prompt})
         
-        try:
-            # Create messages list including history
-            messages = [
-                {"role": "system", "content": self.system_prompt}
-            ]
-            
-            # Add relevant history (last few exchanges to keep context focused)
-            if len(self.message_history) > 0:
-                relevant_history = self.message_history  # use full message history
-                messages.extend(relevant_history)
-            
-            # Add current prompt (which includes the board state and opponent move)
-            messages.append({"role": "user", "content": prompt})
-            
+        try:    
             # Get response from Ollama with temperature and history
             response = ollama.chat(
                 model=self.model,
-                messages=messages,
+                messages=self.message_history,
                 options={"temperature": self.temperature}
             )
             
@@ -106,7 +101,10 @@ class LLMPlayer:
                 self.message_history.append({
                     "role": "assistant",
                     "content": json.dumps({
-                        "move": f"[{from_pos[0]},{from_pos[1]}] to [{to_pos[0]},{to_pos[1]}]",
+                        "move": {
+                            "from": [from_pos[0], from_pos[1]],
+                            "to": [to_pos[0], to_pos[1]]
+                        },
                         "reasoning": reasoning
                     }, indent=2)
                 })
@@ -160,18 +158,17 @@ def llm_move_callback(game: TablutGame) -> str:
         return f"LLM moved from ({from_row},{from_col}) to ({to_row},{to_col})"
     else:
         # Add more detailed invalid move information to history
-        player.message_history.append({
+        player.message_history.append(
+            {
             "role": "system",
-            "content": json.dumps({
-                "invalid_move": {
-                    "from": [from_row, from_col],
-                    "to": [to_row, to_col]
-                },
-                "error": error,
-                "explanation": f"""The move from [{from_row},{from_col}] to [{to_row},{to_col}] is invalid because: {error}.
-Please choose a different move with your own pieces."""
-            }, indent=2)
-        })
+            "content": f"""
+            Invalid move attempted:
+            - From: [{from_row},{from_col}]
+            - To: [{to_row},{to_col}]
+            Error: {error}
+            Explanation: The move from [{from_row},{from_col}] to [{to_row},{to_col}] is invalid because: {error}."""
+            }
+        )
         return f"LLM attempted invalid move: {error}"
 
 def play_game(llm_color: str = "BLACK", model_name: str = "gemma3:1b", temperature: float = 0.7):
@@ -209,7 +206,7 @@ def play_game(llm_color: str = "BLACK", model_name: str = "gemma3:1b", temperatu
 if __name__ == "__main__":
     # Hardcoded configuration values instead of argparse
     color = 'BLACK'  # Options: 'WHITE' or 'BLACK'
-    model = 'deepseek-r1:7b'
+    model = 'gemma3:4b'
     temperature = 0.7
     
     print(f"Starting game with LLM ({model}) playing as {color} (temperature: {temperature})")

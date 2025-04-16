@@ -76,6 +76,8 @@ Notes:
 - Coordinates are zero-based (0-8)
 - The reasoning should explain both immediate tactical goals and longer-term strategic plans
 - If your move is invalid, examine the error message carefully and choose a completely different move
+
+Please think step by step, and then respond with your move and reasoning in JSON format.
 """
 
 MOVE_PROMPT = """{opponent_move}
