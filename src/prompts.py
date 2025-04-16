@@ -73,7 +73,7 @@ You must respond with a JSON object containing:
 }
 
 Notes:
-- Coordinates are zero-based (0-8)
+- Coordinates are zero-based (for example, (0,0) is the top-left corner, and the king is at (4,4))
 - The reasoning should explain both immediate tactical goals and longer-term strategic plans
 - If your move is invalid, examine the error message carefully and choose a completely different move
 
