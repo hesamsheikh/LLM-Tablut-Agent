@@ -24,15 +24,19 @@ Board Legend:
 - When an invalid move is reported, try a completely different piece or direction
 
 Initial Board Layout:
-.**BBB**.
-*...B...*
-*...W...*
-B...W...B
-BBWWKWWBB
-B...W...B
-*...W...*
-*...B...*
-.**BBB**.
+<BOARD>
+   0 1 2 3 4 5 6 7 8
+  +-------------------+
+0 |.|*|*|B|B|B|*|*|.| 
+1 |*|.|.|.|B|.|.|.|*| 
+2 |*|.|.|.|W|.|.|.|*| 
+3 |B|.|.|.|W|.|.|.|B| 
+4 |B|B|W|W|K|W|W|B|B| 
+5 |B|.|.|.|W|.|.|.|B| 
+6 |*|.|.|.|W|.|.|.|*| 
+7 |*|.|.|.|B|.|.|.|*| 
+8 |.|*|*|B|B|B|*|*|.| 
+</BOARD>
 
 Movement Rules:
 1. Basic Movement:
@@ -77,16 +81,17 @@ Notes:
 - The reasoning should explain both immediate tactical goals and longer-term strategic plans
 - If your move is invalid, examine the error message carefully and choose a completely different move
 
-Please think step by step, and then respond with your move and reasoning in JSON format.
+Respond with your move and reasoning in JSON format.
 """
 
 MOVE_PROMPT = """{opponent_move}
-Current board state (9x9):
+Current board state:
+
 {board_str}
 
-You are playing as {current_player}.
-Move count: {move_count}
-Now it your turn."""
+You are playing as {current_player} (Move #{move_count}).
+Analyze the board carefully and respond with your move in JSON format.
+"""
 
 def format_move_prompt(board_str, current_player, move_count, opponent_move=""):
     """Format the move prompt with current game state.

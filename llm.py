@@ -6,10 +6,11 @@ from src.prompts import SYSTEM_PROMPT, MOVE_PROMPT
 from src.utils import GameVisualizer, PlayerType
 
 class LLMPlayer:
-    def __init__(self, model_name: str = "gemma3:1b", temperature: float = 0.7):
+    def __init__(self, model_name: str = "gemma3:1b", temperature: float = 0.7, top_p: float = 0.3):
         """Initialize LLM player with specified model and temperature"""
         self.model = model_name
         self.temperature = temperature
+        self.top_p = top_p
         self.system_prompt = SYSTEM_PROMPT
         self.move_prompt = MOVE_PROMPT
         self.game = None
@@ -22,14 +23,29 @@ class LLMPlayer:
         """Set the game instance for this player"""
         self.game = game
         
+    def _format_board_with_tags(self, raw_board_str: str) -> str:
+        """Format raw board string into the <BOARD> tag format with row/column headers."""
+        lines = raw_board_str.strip().split('\n')
+        formatted_lines = ["<BOARD>"]
+        # Add column numbers header
+        formatted_lines.append("   0 1 2 3 4 5 6 7 8")
+        formatted_lines.append("  +-------------------+")
+        for row_num, line in enumerate(lines):
+            cells = line.split()
+            formatted_line = f"{row_num} |{'|'.join(cells)}|"
+            formatted_lines.append(formatted_line)
+        formatted_lines.append("</BOARD>")
+        return '\n'.join(formatted_lines)
+
     def _board_to_prompt(self, opponent_move_str: str = "") -> str:
         """Convert current board state to a prompt for the LLM, including opponent's move if any"""
-        board_str = self.game._board_to_string()
+        raw_board_str = self.game._board_to_string()
+        formatted_board = self._format_board_with_tags(raw_board_str)
         current_player = self.game.current_player.value
         move_count = self.game.move_count
 
         return self.format_move_prompt(
-            board_str=board_str,
+            board_str=formatted_board,
             current_player=current_player,
             move_count=move_count,
             opponent_move=opponent_move_str
@@ -84,7 +100,7 @@ class LLMPlayer:
             response = ollama.chat(
                 model=self.model,
                 messages=self.message_history,
-                options={"temperature": self.temperature}
+                options={"temperature": self.temperature, "top_p": self.top_p}
             )
             
             # Extract and parse JSON response
@@ -160,18 +176,18 @@ def llm_move_callback(game: TablutGame) -> str:
         # Add more detailed invalid move information to history
         player.message_history.append(
             {
-            "role": "system",
+            "role": "user",
             "content": f"""
-            Invalid move attempted:
+            The move you suggested is invalid:
             - From: [{from_row},{from_col}]
             - To: [{to_row},{to_col}]
             Error: {error}
-            Explanation: The move from [{from_row},{from_col}] to [{to_row},{to_col}] is invalid because: {error}."""
+            """
             }
         )
         return f"LLM attempted invalid move: {error}"
 
-def play_game(llm_color: str = "BLACK", model_name: str = "gemma3:1b", temperature: float = 0.7):
+def play_game(llm_color: str = "BLACK", model_name: str = "gemma3:1b", temperature: float = 0.7, top_p: float = 0.3):
     """
     Start a game with LLM playing as the specified color.
     
@@ -179,6 +195,7 @@ def play_game(llm_color: str = "BLACK", model_name: str = "gemma3:1b", temperatu
         llm_color: "WHITE" or "BLACK" (default: "BLACK")
         model_name: Name of the LLM model to use (default: "gemma3:1b")
         temperature: Sampling temperature for LLM (default: 0.7)
+        top_p: Top-p sampling for LLM (default: 0.3)
     """
     game = TablutGame()
     
@@ -195,9 +212,9 @@ def play_game(llm_color: str = "BLACK", model_name: str = "gemma3:1b", temperatu
     # Initialize the LLM player with specified model and temperature
     global white_player, black_player
     if llm_player == Player.WHITE:
-        white_player = LLMPlayer(model_name, temperature)
+        white_player = LLMPlayer(model_name, temperature, top_p)
     else:
-        black_player = LLMPlayer(model_name, temperature)
+        black_player = LLMPlayer(model_name, temperature, top_p)
     
     # Run game with appropriate configuration
     visualizer = GameVisualizer()
@@ -207,7 +224,8 @@ if __name__ == "__main__":
     # Hardcoded configuration values instead of argparse
     color = 'BLACK'  # Options: 'WHITE' or 'BLACK'
     model = 'gemma3:4b'
-    temperature = 0.7
-    
-    print(f"Starting game with LLM ({model}) playing as {color} (temperature: {temperature})")
-    play_game(llm_color=color, model_name=model, temperature=temperature)
+    temperature = 0.2
+    top_p = 0.3
+
+    print(f"Starting game with LLM ({model}) playing as {color} (temperature: {temperature} top_p: {top_p})")
+    play_game(llm_color=color, model_name=model, temperature=temperature, top_p=top_p)
