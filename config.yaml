@@ -8,8 +8,18 @@ ollama:
   # ollama_host: "http://localhost:11434"  # Optional: Specify if Ollama runs elsewhere
 
 remote:
-  model: "gpt-4o"
+  model: "deepseek-chat"
   temperature: 0.2
   top_p: 0.3
-  remote_api_url: "https://api.openai.com/v1/chat/completions"  # e.g., "https://api.openai.com/v1/chat/completions"
-  remote_model_override: "gpt-4o"  # Optional: Use if remote API model name differs from common 'model' 
+  remote_api_url: "https://api.deepseek.com/chat/completions"  # e.g., "https://api.openai.com/v1/chat/completions"
+  remote_model_override: "deepseek-chat"  # Optional: Use if remote API model name differs from common 'model' 
+
+# configuration for player types and PPO settings
+white_player: "random"  # Options: 'llm', 'ppo', or 'gui'
+black_player: "llm"  # Options: 'llm', 'ppo', or 'gui'
+ppo_model_path: "model\\ppo_white_20250407_225550\\tablut_ppo_white_wr97_ep2700.pth"
+ppo_temperature: 0.1
+ppo_use_cpu: false
+
+# Benchmark configuration
+num_games: 20 

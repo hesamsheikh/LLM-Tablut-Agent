@@ -276,16 +276,8 @@ class TablutGame:
             # Increment move counter
             self.move_count += 1
             
-            # Store last move
-            self.last_move[moving_player] = {
-                "from": (from_row, from_col),
-                "to": (to_row, to_col),
-                "piece": piece,
-                "move_count": self.move_count
-            }
-            
             # Check for captures after move
-            self.check_captures(to_row, to_col, moving_player)
+            captured_pieces = self.check_captures(to_row, to_col, moving_player)
             
             # Update state count after move
             self._update_state_count()
@@ -323,6 +315,17 @@ class TablutGame:
                 # self.archive_manager.save_game(winner, is_draw, description=reason)
                 return True, reason  # Return the reason with success
             
+            # Store last move with capture info if any
+            move_data = {
+                "from": (from_row, from_col),
+                "to": (to_row, to_col),
+                "piece": piece,
+                "move_count": self.move_count
+            }
+            if captured_pieces:
+                move_data["capture"] = captured_pieces[0]
+            self.last_move[moving_player] = move_data
+            
             return True, None
 
         return False, f"{self.current_player.value} attempted invalid move from ({from_row},{from_col}) to ({to_row},{to_col})"
@@ -336,50 +339,52 @@ class TablutGame:
         # First pass: Mark pieces for capture
         pieces_to_capture = set()
         
-        # Check each direction pair for sandwiching captures
+        # Process all directions for captures
         for i in range(2):
             # Get opposite directions
             dir1, dir2 = directions[i], directions[i+2]
-            
+
             # Check both directions for captures
             for direction in [dir1, dir2]:
                 curr_row, curr_col = row, col
                 potential_captures = []
-                
+
                 # Keep checking in this direction
                 while True:
                     curr_row += direction[0] 
                     curr_col += direction[1]
-                    
+
                     # Stop if out of bounds
                     if not (0 <= curr_row < 9 and 0 <= curr_col < 9):
                         break
-                        
+
                     curr_piece = self.board[curr_row][curr_col]
-                    
+
                     # Stop if empty
                     if curr_piece == Piece.EMPTY:
                         break
 
                     if moving_player == Player.BLACK and curr_piece in [Piece.KING, Piece.CASTLE]:
-                        pieces_to_capture.clear()
+                        potential_captures = []
                         break
-                    
+
                     # If we hit our own piece and have potential captures
                     if ((moving_player == Player.WHITE and curr_piece in [Piece.WHITE, Piece.KING, Piece.CASTLE]) or
                         (moving_player == Player.BLACK and curr_piece in [Piece.BLACK, Piece.CAMP])):
                         if potential_captures:
                             pieces_to_capture.update(potential_captures)
                         break
-                    
+
                     # Add enemy piece as potential capture
                     if ((moving_player == Player.WHITE and curr_piece == Piece.BLACK) or
                         (moving_player == Player.BLACK and curr_piece == Piece.WHITE)):
                         potential_captures.append((curr_row, curr_col))
         
-                # Execute captures
-                for capture_row, capture_col in pieces_to_capture:
-                    self._clear_tile(capture_row, capture_col)
+        # Execute captures after processing all directions
+        captured_list = list(pieces_to_capture)
+        for capture_row, capture_col in captured_list:
+            self._clear_tile(capture_row, capture_col)
+        return captured_list
 
 
     def is_king_captured(self):
