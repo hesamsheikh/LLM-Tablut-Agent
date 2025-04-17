@@ -89,7 +89,7 @@ Current board state:
 
 {board_str}
 
-You are playing as {current_player} (Move #{move_count}).
+You are playing as {current_player} (Total moves made: {move_count}).
 Analyze the board carefully and respond with your move in JSON format.
 """
 

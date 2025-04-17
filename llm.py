@@ -1,9 +1,18 @@
 import ollama
+import yaml
+import os
+from dotenv import load_dotenv
+load_dotenv()
+import openai
 import json
 from typing import List, Tuple, Optional
 from src.tablut import TablutGame, Player, Piece
 from src.prompts import SYSTEM_PROMPT, MOVE_PROMPT
 from src.utils import GameVisualizer, PlayerType
+
+# Load configuration for LLM settings from config.yaml
+with open("config.yaml", "r") as f:
+    config = yaml.safe_load(f)
 
 class LLMPlayer:
     def __init__(self, model_name: str = "gemma3:1b", temperature: float = 0.7, top_p: float = 0.3):
@@ -72,69 +81,94 @@ class LLMPlayer:
             move_count=move_count
         )
     
-    def get_move(self) -> Tuple[Tuple[int, int], Tuple[int, int]]:
-        """Get next move from LLM"""
-        if not self.game:
-            raise ValueError("Game not set. Call set_game() first.")
-        
-        # Get opponent's last move if available
+    def _prepare_prompt(self) -> str:
+        # Prepare the prompt using the current board state and opponent's last move.
         opponent = Player.BLACK if self.game.current_player == Player.WHITE else Player.WHITE
         opponent_move = self.game.get_last_move(opponent)
         opponent_move_str = ""
-        
         if opponent_move:
             from_pos = opponent_move['from']
             to_pos = opponent_move['to']
             opponent_move_str = f"I moved from [{from_pos[0]},{from_pos[1]}] to [{to_pos[0]},{to_pos[1]}]. "
-
-        # Generate the prompt with current board state and opponent move
         prompt = self._board_to_prompt(opponent_move_str)
-    
-        # Add current prompt to history if it's not already there   
-        message_contents = [m["content"] for m in self.message_history]
-        if prompt not in message_contents:
+        if prompt not in [m['content'] for m in self.message_history]:
             self.message_history.append({"role": "user", "content": prompt})
-        
-        try:    
-            # Get response from Ollama with temperature and history
-            response = ollama.chat(
-                model=self.model,
-                messages=self.message_history,
-                options={"temperature": self.temperature, "top_p": self.top_p}
-            )
-            
-            # Extract and parse JSON response
-            try:
-                response_content = self._extract_json_from_response(response['message']['content'])
-                move_data = json.loads(response_content)
-                
-                # Extract move coordinates
-                from_pos = move_data['move']['from']
-                to_pos = move_data['move']['to']
-                reasoning = move_data['reasoning']
-                
-                # Add LLM response to history with reasoning
-                self.message_history.append({
-                    "role": "assistant",
-                    "content": json.dumps({
-                        "move": {
-                            "from": [from_pos[0], from_pos[1]],
-                            "to": [to_pos[0], to_pos[1]]
-                        },
-                        "reasoning": reasoning
-                    }, indent=2)
-                })
-                
-                return (from_pos[0], from_pos[1]), (to_pos[0], to_pos[1])
-                
-            except json.JSONDecodeError as e:
-                print(f"Error parsing LLM response as JSON: {e}")
-                print(f"Raw response: {response['message']['content']}")
-                return None
-                
+        return prompt
+
+    def _call_llm(self) -> str:
+        # Call the LLM service based on the configuration provider and return the extracted response content.
+        try:
+            if config.get('provider') == 'ollama':
+                response = ollama.chat(
+                    model=config['ollama']['model'],
+                    messages=self.message_history,
+                    options={"temperature": config['ollama']['temperature'], "top_p": config['ollama']['top_p']}
+                )
+                return self._extract_json_from_response(response['message']['content'])
+            elif config.get('provider') == 'remote':
+                openai.api_key = os.getenv("OPENAI_API_KEY")
+                # Commented out the api_base assignment as per previous changes
+                # openai.api_base = config['remote']['remote_api_url']
+                model_to_use = config['remote'].get('remote_model_override', config['remote']['model'])
+                response = openai.chat.completions.create(
+                    model=model_to_use,
+                    messages=self.message_history,
+                    temperature=config['remote']['temperature'],
+                    top_p=config['remote']['top_p']
+                )
+                remote_response = response.choices[0].message.content
+                return self._extract_json_from_response(remote_response)
+            else:
+                raise ValueError(f"Unknown provider: {config.get('provider')}")
         except Exception as e:
-            print(f"Error getting move from LLM: {e}")
+            print(f"Error calling LLM: {e}")
             return None
+
+    def _parse_move_data(self, response_content: str) -> Optional[Tuple[Tuple[int, int], Tuple[int, int], str]]:
+        # Parse the LLM JSON response to extract move coordinates and reasoning.
+        try:
+            move_data = json.loads(response_content)
+            from_pos = move_data['move']['from']
+            to_pos = move_data['move']['to']
+            reasoning = move_data['reasoning']
+            return (from_pos[0], from_pos[1]), (to_pos[0], to_pos[1]), reasoning
+        except json.JSONDecodeError as e:
+            print(f"Error parsing move data as JSON: {e}")
+            print(f"Raw response: {response_content}")
+            return None
+
+    def get_move(self) -> Tuple[Tuple[int, int], Tuple[int, int]]:
+        if not self.game:
+            raise ValueError("Game not set. Call set_game() first.")
+        
+        # Prepare the prompt and update message history
+        self._prepare_prompt()
+
+        # Call the LLM service to obtain the response
+        response_content = self._call_llm()
+        if response_content is None:
+            return None
+        
+        # Parse the move data from the response
+        parsed = self._parse_move_data(response_content)
+        if not parsed:
+            return None
+        
+        from_pos, to_pos, reasoning = parsed
+        
+        # Add the parsed LLM response (with reasoning) to the message history
+        self.message_history.append({
+            "role": "assistant",
+            "content": json.dumps({
+                "move": {
+                    "from": [from_pos[0], from_pos[1]],
+                    "to": [to_pos[0], to_pos[1]]
+                },
+                "reasoning": reasoning
+            }, indent=2)
+        })
+        
+        return from_pos, to_pos
 
 # Create a global instance for each player color
 white_player = None
@@ -187,13 +221,13 @@ def llm_move_callback(game: TablutGame) -> str:
         )
         return f"LLM attempted invalid move: {error}"
 
-def play_game(llm_color: str = "BLACK", model_name: str = "gemma3:1b", temperature: float = 0.7, top_p: float = 0.3):
+def play_game(llm_color: str = "BLACK", model_name: str = "gemma3:4b", temperature: float = 0.7, top_p: float = 0.3):
     """
     Start a game with LLM playing as the specified color.
     
     Args:
         llm_color: "WHITE" or "BLACK" (default: "BLACK")
-        model_name: Name of the LLM model to use (default: "gemma3:1b")
+        model_name: Name of the LLM model to use (default: "gemma3:4b")
         temperature: Sampling temperature for LLM (default: 0.7)
         top_p: Top-p sampling for LLM (default: 0.3)
     """
@@ -221,11 +255,18 @@ def play_game(llm_color: str = "BLACK", model_name: str = "gemma3:1b", temperatu
     visualizer.run(game, white_player_type=white_type, black_player_type=black_type)
 
 if __name__ == "__main__":
-    # Hardcoded configuration values instead of argparse
-    color = 'BLACK'  # Options: 'WHITE' or 'BLACK'
-    model = 'gemma3:4b'
-    temperature = 0.2
-    top_p = 0.3
+    llm_color = config['llm_color']
+    provider = config['provider']
+    if provider == 'ollama':
+        model = config['ollama']['model']
+        temperature = config['ollama']['temperature']
+        top_p = config['ollama']['top_p']
+    elif provider == 'remote':
+        model = config['remote']['model']
+        temperature = config['remote']['temperature']
+        top_p = config['remote']['top_p']
+    else:
+        raise ValueError(f"Unknown provider: {provider}")
 
-    print(f"Starting game with LLM ({model}) playing as {color} (temperature: {temperature} top_p: {top_p})")
-    play_game(llm_color=color, model_name=model, temperature=temperature, top_p=top_p)
+    print(f"Starting game with LLM ({model}) playing as {llm_color} (temperature: {temperature} top_p: {top_p})")
+    play_game(llm_color=llm_color, model_name=model, temperature=temperature, top_p=top_p)

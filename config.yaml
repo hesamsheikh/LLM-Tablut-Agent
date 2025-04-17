@@ -1,0 +1,15 @@
+provider: remote  # 'ollama' or 'remote'
+llm_color: "BLACK"  # 'BLACK' or 'WHITE'
+
+ollama:
+  model: "gemma3:4b"
+  temperature: 0.2
+  top_p: 0.3
+  # ollama_host: "http://localhost:11434"  # Optional: Specify if Ollama runs elsewhere
+
+remote:
+  model: "gpt-4o"
+  temperature: 0.2
+  top_p: 0.3
+  remote_api_url: "https://api.openai.com/v1/chat/completions"  # e.g., "https://api.openai.com/v1/chat/completions"
+  remote_model_override: "gpt-4o"  # Optional: Use if remote API model name differs from common 'model' 
