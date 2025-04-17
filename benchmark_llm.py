@@ -2,7 +2,7 @@ import os
 import json
 import yaml
 
-from llm import llm_move_callback
+from llm import llm_move_callback, white_player, black_player
 from src.tablut import TablutGame, Player
 from src.utils import Piece
 
@@ -106,7 +106,7 @@ def force_valid_move(game):
     return "No valid moves available"
 
 
-def player_turn(game, callback, max_attempts=10):
+def player_turn(game, callback, max_attempts=5):
     """
     Executes one turn for the current player using the provided callback, allowing multiple attempts until a valid move is made.
     Records invalid attempts and reasons.
@@ -135,6 +135,14 @@ def benchmark_game(config):
     Plays a single game with players determined by config.
     It tracks the moves, counts of invalid moves, and reasons behind invalid moves per turn.
     """
+    global white_player, black_player
+    
+    # Reset players at the start of each game
+    if white_player is not None:
+        white_player.reset()
+    if black_player is not None:
+        black_player.reset()
+    
     game = TablutGame()
     white_config = config["white_player"]
     black_config = config["black_player"]
@@ -174,7 +182,17 @@ def main():
         config = yaml.safe_load(f)
 
     num_games = config["num_games"]
-    os.makedirs(os.path.join("logs", "benchmark"), exist_ok=True)
+    white_config = config["white_player"]
+    black_config = config["black_player"]
+    save_dir = os.path.join("logs", "benchmark", f"w_{white_config}_vs_b_{black_config}_vanilla")
+    os.makedirs(save_dir, exist_ok=True)
+
+    # Find the highest existing game number
+    existing_games = [f for f in os.listdir(save_dir) if f.startswith("game_") and f.endswith(".json")]
+    start_game_num = 0
+    if existing_games:
+        highest_num = max(int(f.split("_")[1].split(".")[0]) for f in existing_games)
+        start_game_num = highest_num
 
     all_games = []
     total_invalid_moves = 0
@@ -182,7 +200,8 @@ def main():
     llm_wins = 0
 
     for i in range(num_games):
-        print(f"Starting game {i+1}...")
+        current_game_num = start_game_num + i + 1
+        print(f"Starting game {current_game_num}...")
         game_result = benchmark_game(config)
         all_games.append(game_result)
         total_invalid_moves += game_result["total_invalid_moves"]
@@ -191,11 +210,11 @@ def main():
         if game_result["winner"].lower() == "llm":
             llm_wins += 1
 
-        # Save individual game result
-        game_log_file = os.path.join("logs", "benchmark", f"game_{i+1}.json")
+        # Save individual game result in the new folder
+        game_log_file = os.path.join(save_dir, f"game_{current_game_num}.json")
         with open(game_log_file, "w") as f:
             json.dump(game_result, f, indent=2)
-        print(f"Game {i+1} completed: winner - {game_result['winner']}, moves - {game_result['total_moves']}, invalid moves - {game_result['total_invalid_moves']}")
+        print(f"Game {current_game_num} completed: winner - {game_result['winner']}, moves - {game_result['total_moves']}, invalid moves - {game_result['total_invalid_moves']}")
 
     aggregate = {
         "total_games": num_games,
@@ -205,7 +224,7 @@ def main():
         "llm_win_rate": (llm_wins / num_games) * 100,
         "games": all_games
     }
-    summary_log_file = os.path.join("logs", "benchmark", "benchmark_summary.json")
+    summary_log_file = os.path.join(save_dir, "benchmark_summary.json")
     with open(summary_log_file, "w") as f:
         json.dump(aggregate, f, indent=2)
     print(f"Benchmark completed for {num_games} games. Summary written to {summary_log_file}")

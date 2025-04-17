@@ -26,7 +26,7 @@ class TablutGame:
     CASTLE_POSITION = (4,4)
     
     # Add MOVE_LIMIT as a class constant
-    MOVE_LIMIT = 100  # Maximum number of moves allowed
+    MOVE_LIMIT = 20  # Maximum number of moves allowed
 
     def __init__(self):
         # Initialize 9x9 board

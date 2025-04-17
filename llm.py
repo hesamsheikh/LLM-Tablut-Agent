@@ -24,7 +24,11 @@ class LLMPlayer:
         self.top_p = top_p
         self.system_prompt = SYSTEM_PROMPT
         self.move_prompt = MOVE_PROMPT
-        self.game: Optional[TablutGame] = None
+        self.reset()
+
+    def reset(self) -> None:
+        """Resets the player's state, including message history and game instance."""
+        self.game = None
         self.message_history = [{"role": "system", "content": self.system_prompt}]
 
     def set_game(self, game: TablutGame) -> None:
@@ -160,6 +164,8 @@ black_player: Optional[LLMPlayer] = None
 def llm_move_callback(game: TablutGame) -> str:
     """Callback for LLM moves. Initializes the corresponding LLMPlayer and executes the move."""
     global white_player, black_player
+    
+    # Initialize players as needed
     if game.current_player == Player.WHITE:
         if white_player is None:
             white_player = LLMPlayer()
@@ -169,7 +175,12 @@ def llm_move_callback(game: TablutGame) -> str:
             black_player = LLMPlayer()
         player = black_player
 
+    # Set game and ensure initial board state is available
     player.set_game(game)
+    if len(player.message_history) == 1:  # Only system prompt exists
+        prompt = player._board_to_prompt()
+        player.message_history.append({"role": "user", "content": prompt})
+
     move = player.get_move()
     if move is None:
         return "LLM failed to provide a valid move"
@@ -345,4 +356,3 @@ def play_game_configurable() -> None:
 if __name__ == "__main__":
     print("Starting configurable game based on white_player and black_player settings.")
     play_game_configurable()
-
