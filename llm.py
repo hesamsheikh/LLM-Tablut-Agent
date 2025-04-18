@@ -156,24 +156,16 @@ class LLMPlayer:
         return from_pos, to_pos
 
 
-# Global instances for LLM players
-white_player: Optional[LLMPlayer] = None
-black_player: Optional[LLMPlayer] = None
-
-
 def llm_move_callback(game: TablutGame) -> str:
-    """Callback for LLM moves. Initializes the corresponding LLMPlayer and executes the move."""
-    global white_player, black_player
-    
-    # Initialize players as needed
-    if game.current_player == Player.WHITE:
-        if white_player is None:
-            white_player = LLMPlayer()
-        player = white_player
-    else:
-        if black_player is None:
-            black_player = LLMPlayer()
-        player = black_player
+    """Callback for LLM moves. Creates a new LLMPlayer instance if needed and executes the move."""
+    # Create a new player instance if this is the first move
+    if not hasattr(game, 'llm_white') and game.current_player == Player.WHITE:
+        game.llm_white = LLMPlayer()
+    elif not hasattr(game, 'llm_black') and game.current_player == Player.BLACK:
+        game.llm_black = LLMPlayer()
+
+    # Get the appropriate player
+    player = game.llm_white if game.current_player == Player.WHITE else game.llm_black
 
     # Set game and ensure initial board state is available
     player.set_game(game)
@@ -205,16 +197,8 @@ def play_game(llm_color: str = "BLACK", model_name: str = "gemma3:4b", temperatu
     target = Player.WHITE if llm_color.upper() == "WHITE" else Player.BLACK
     game.set_move_callback(llm_move_callback, target)
 
-    global white_player, black_player
-    if target == Player.WHITE:
-        white_player = LLMPlayer(model_name, temperature, top_p)
-        white_type, black_type = PlayerType.LLM, PlayerType.GUI
-    else:
-        black_player = LLMPlayer(model_name, temperature, top_p)
-        white_type, black_type = PlayerType.GUI, PlayerType.LLM
-
     visualizer = GameVisualizer()
-    visualizer.run(game, white_player_type=white_type, black_player_type=black_type)
+    visualizer.run(game, white_player_type=PlayerType.LLM, black_player_type=PlayerType.GUI)
 
 
 def play_game_llm_vs_ppo(llm_side: str = "BLACK",

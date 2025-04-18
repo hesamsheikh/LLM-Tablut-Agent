@@ -2,7 +2,7 @@ import os
 import json
 import yaml
 
-from llm import llm_move_callback, white_player, black_player
+from llm import llm_move_callback
 from src.tablut import TablutGame, Player
 from src.utils import Piece
 
@@ -135,14 +135,6 @@ def benchmark_game(config):
     Plays a single game with players determined by config.
     It tracks the moves, counts of invalid moves, and reasons behind invalid moves per turn.
     """
-    global white_player, black_player
-    
-    # Reset players at the start of each game
-    if white_player is not None:
-        white_player.reset()
-    if black_player is not None:
-        black_player.reset()
-    
     game = TablutGame()
     white_config = config["white_player"]
     black_config = config["black_player"]
