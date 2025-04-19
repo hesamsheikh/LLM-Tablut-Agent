@@ -3,6 +3,81 @@ Prompts for the Tablut LLM player.
 Contains system prompt for game rules and move prompt for requesting moves.
 """
 
+# Few-shot examples
+FEW_SHOT_WHITE_WIN = """
+<FEW_SHOT_EXAMPLE>
+
+# Assuming Black's last move was irrelevant for this specific win scenario
+
+Current board state:
+
+<BOARD>
+   0 1 2 3 4 5 6 7 8
+  +-------------------+
+0 |.|*|*|B|#|B|*|*|.|
+1 |*|.|K|.|#|.|.|.|*|
+2 |*|.|W|.|W|.|W|.|*|
+3 |B|.|.|.|.|.|.|.|B|
+4 |#|B|W|.|C|.|W|B|#|
+5 |B|.|.|.|W|.|.|.|B|
+6 |*|.|W|.|W|.|W|.|*|
+7 |*|.|.|.|B|.|.|.|*|
+8 |.|*|*|B|#|B|*|*|.|
+</BOARD>
+
+You are playing as WHITE (Total moves made: 15).
+Analyze the board carefully and respond with your move in JSON format.
+
+RESPONSE:
+```json
+{
+  "move": {
+    "from": [1, 2],
+    "to": [1, 0]
+  },
+  "reasoning": "The King is currently at (1,2). Moving to (1,0) places the King on an escape tile '*', which secures a win for White according to the rules."
+}
+```
+</FEW_SHOT_EXAMPLE>
+"""
+
+FEW_SHOT_BLACK_WIN = """
+<FEW_SHOT_EXAMPLE>
+
+# Assuming White's last move was irrelevant for this specific win scenario
+
+Current board state:
+
+<BOARD>
+   0 1 2 3 4 5 6 7 8
+  +-------------------+
+0 |.|*|*|B|B|B|*|*|.|
+1 |*|.|.|.|#|.|.|.|*|
+2 |*|.|.|.|K|B|W|.|*|
+3 |B|B|.|.|.|.|W|.|B|
+4 |B|.|.|W|C|W|.|W|B|
+5 |B|B|.|.|W|B|.|B|B|
+6 |*|.|.|.|.|B|.|.|*|
+7 |*|.|B|.|#|.|.|.|*|
+8 |.|*|*|B|B|B|*|*|.|
+</BOARD>
+
+You are playing as BLACK (Total moves made: 18).
+Analyze the board carefully and respond with your move in JSON format.
+
+RESPONSE:
+```json
+{
+  "move": {
+    "from": [0, 3],
+    "to": [2, 3]
+  },
+  "reasoning": "The King (K) at (2,4) is currently surrounded by Black pawns (B) on one side at (2,5). Moving the Black pawn from (0,3) to (2,3) completes sandwiching the King on the other side, capturing the King and winning the game for Black."
+}
+```
+</FEW_SHOT_EXAMPLE>
+"""
+
 SYSTEM_PROMPT = """You are playing the ancient Viking board game Tablut. You must provide valid moves in JSON format.
 
 Game Overview:
@@ -80,6 +155,9 @@ Notes:
 - Coordinates are zero-based (for example, (0,0) is the top-left corner, and the king is at (4,4))
 - The reasoning should explain both immediate tactical goals and longer-term strategic plans
 - If your move is invalid, examine the error message carefully and choose a completely different move
+- The game has a maximum of 20 moves, if you reach that, the game ends with a draw. So, make sure to make important moves
+
+{FEW_SHOT_EXAMPLES}
 
 Respond with your move and reasoning in JSON format.
 """

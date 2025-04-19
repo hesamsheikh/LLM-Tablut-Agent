@@ -176,7 +176,8 @@ def main():
     num_games = config["num_games"]
     white_config = config["white_player"]
     black_config = config["black_player"]
-    save_dir = os.path.join("logs", "benchmark", f"w_{white_config}_vs_b_{black_config}_vanilla")
+    eval_type = config["eval_type"]
+    save_dir = os.path.join("logs", "benchmark", f"w_{white_config}_vs_b_{black_config}_{eval_type}")
     os.makedirs(save_dir, exist_ok=True)
 
     # Find the highest existing game number

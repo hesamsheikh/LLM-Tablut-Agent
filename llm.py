@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 from typing import Optional, Tuple
 
 from src.tablut import TablutGame, Player
-from src.prompts import SYSTEM_PROMPT, MOVE_PROMPT
+from src.prompts import SYSTEM_PROMPT, MOVE_PROMPT, FEW_SHOT_WHITE_WIN, FEW_SHOT_BLACK_WIN
 from src.utils import GameVisualizer, PlayerType
 
 # Load environment variables and configuration
@@ -22,7 +22,19 @@ class LLMPlayer:
         self.model = model_name
         self.temperature = temperature
         self.top_p = top_p
-        self.system_prompt = SYSTEM_PROMPT
+        
+        # Determine if few-shot examples should be used based on config
+        provider_config = config.get(config.get('provider', 'ollama'), {})
+        use_few_shot = provider_config.get('use_few_shot', False)
+        
+        current_system_prompt = SYSTEM_PROMPT
+        few_shot_examples = ""
+        if use_few_shot:
+            # Prepend examples to the base system prompt
+            few_shot_examples = f"{FEW_SHOT_WHITE_WIN}\n{FEW_SHOT_BLACK_WIN}\n"
+        current_system_prompt = current_system_prompt.replace("{FEW_SHOT_EXAMPLES}", few_shot_examples)
+
+        self.system_prompt = current_system_prompt
         self.move_prompt = MOVE_PROMPT
         self.reset()
 
