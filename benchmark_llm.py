@@ -1,171 +1,182 @@
 import os
 import json
 import yaml
+import random # Keep random for the random player
+from typing import Tuple
 
 from llm import llm_move_callback
+from llm_two_step import llm_two_step_move_callback # Import the new callback
 from src.tablut import TablutGame, Player
 from src.utils import Piece
 
 
-def random_move_callback(game):
-    import random
+def random_move_callback(game: TablutGame) -> str:
+    """Callback for a random valid move.
+    Returns a tuple: (message, invalid_count, reasons)
+    """
     current_player = game.current_player
     valid_moves = []
-    if current_player == Player.WHITE:
-        for i in range(9):
-            for j in range(9):
-                piece = game.board[i][j]
-                if piece in (Piece.WHITE, Piece.KING):
-                    moves = game.get_valid_moves(i, j)
-                    for move in moves:
-                        valid_moves.append((i, j, move[0], move[1]))
-    elif current_player == Player.BLACK:
-        for i in range(9):
-            for j in range(9):
-                piece = game.board[i][j]
-                if piece == Piece.BLACK:
-                    moves = game.get_valid_moves(i, j)
-                    for move in moves:
-                        valid_moves.append((i, j, move[0], move[1]))
-    if valid_moves:
-        chosen_move = random.choice(valid_moves)
-        r_from, c_from, r_to, c_to = chosen_move
-        success, error = game.move_piece(r_from, c_from, r_to, c_to)
-        if success:
-            return f"Random agent moved from ({r_from},{c_from}) to ({r_to},{c_to})"
-        else:
-            return f"Random agent attempted invalid move from ({r_from},{c_from}) to ({r_to},{c_to})"
-    else:
-        return "Random agent found no valid moves"
+    piece_types = (Piece.WHITE, Piece.KING) if current_player == Player.WHITE else (Piece.BLACK,)
 
-
-def get_callback(player_config, side, config):
-    if player_config.lower() == "llm":
-        return llm_move_callback
-    elif player_config.lower() == "ppo":
-        import torch
-        from ppo_trainer import TablutPPONetwork, TablutEnv, get_valid_action_mask
-        device = "cuda" if torch.cuda.is_available() and not config["ppo_use_cpu"] else "cpu"
-        ppo_model = TablutPPONetwork(in_channels=6).to(device)
-        ppo_model.load_state_dict(torch.load(config["ppo_model_path"], map_location=device))
-        ppo_model.eval()
-        
-        def ppo_callback(game):
-            env = TablutEnv()
-            env.game = game
-            obs = env._get_observation()
-            valid_mask = get_valid_action_mask(game)
-            valid_mask_tensor = torch.BoolTensor(valid_mask).to(device)
-            state_tensor = torch.FloatTensor(obs).unsqueeze(0).to(device)
-            with torch.no_grad():
-                policy_logits, _ = ppo_model(state_tensor)
-                policy_logits = policy_logits.squeeze(0) / config["ppo_temperature"]
-                policy_logits[~valid_mask_tensor] = float('-inf')
-                action = torch.argmax(torch.softmax(policy_logits, dim=0)).item()
-            from_pos = action // 81
-            to_pos = action % 81
-            from_row, from_col = divmod(from_pos, 9)
-            to_row, to_col = divmod(to_pos, 9)
-            success, _ = game.move_piece(from_row, from_col, to_row, to_col)
-            if success:
-                return f"PPO agent moved from ({from_row},{from_col}) to ({to_row},{to_col})"
-            else:
-                return f"PPO agent attempted invalid move from ({from_row},{from_col}) to ({to_row},{to_col})"
-        
-        return ppo_callback
-    elif player_config.lower() == "random":
-        return random_move_callback
-    elif player_config.lower() == "gui":
-        return force_valid_move
-    else:
-        raise ValueError(f"Unknown player type: {player_config}")
-
-
-def force_valid_move(game):
-    """
-    Forces a valid move for the current player by scanning the board for a valid move.
-    """
-    cp = game.current_player
     for r in range(9):
         for c in range(9):
-            piece = game.board[r][c]
-            if cp == Player.WHITE and piece in (Piece.WHITE, Piece.KING):
+            if game.board[r][c] in piece_types:
                 moves = game.get_valid_moves(r, c)
-                if moves:
-                    to_r, to_c = moves[0]
-                    success, error = game.move_piece(r, c, to_r, to_c)
-                    if success:
-                        return f"Forced valid move: from ({r},{c}) to ({to_r},{to_c})"
-            elif cp == Player.BLACK and piece == Piece.BLACK:
-                moves = game.get_valid_moves(r, c)
-                if moves:
-                    to_r, to_c = moves[0]
-                    success, error = game.move_piece(r, c, to_r, to_c)
-                    if success:
-                        return f"Forced valid move: from ({r},{c}) to ({to_r},{to_c})"
-    return "No valid moves available"
+                for move in moves:
+                    valid_moves.append(((r, c), move)) # Store as ((r_from, c_from), (r_to, c_to))
 
-
-def player_turn(game, callback, max_attempts=5):
-    """
-    Executes one turn for the current player using the provided callback, allowing multiple attempts until a valid move is made.
-    Records invalid attempts and reasons.
-    """
-    invalid_count = 0
-    reasons = {}
-    for attempt in range(max_attempts):
-        msg = callback(game)
-        if msg.startswith("LLM moved") or msg.startswith("PPO agent moved") or msg.startswith("Random agent moved"):
-            return msg, invalid_count, reasons
+    if valid_moves:
+        chosen_move = random.choice(valid_moves)
+        (r_from, c_from), (r_to, c_to) = chosen_move
+        success, error = game.move_piece(r_from, c_from, r_to, c_to)
+        if success:
+            return f"Random agent moved from ({r_from},{c_from}) to ({r_to},{c_to})", 0, {}
         else:
-            invalid_count += 1
-            if "attempted invalid move:" in msg:
-                reason = msg.split("attempted invalid move:")[-1].strip()
-            elif "failed to provide a valid move" in msg:
-                reason = "failed to provide a valid move"
-            else:
-                reason = msg
-            reasons[reason] = reasons.get(reason, 0) + 1
-    forced_msg = force_valid_move(game)
-    return forced_msg, invalid_count, reasons
+            # Should ideally not happen if get_valid_moves is correct
+            error_msg = f"Random agent attempted invalid move from ({r_from},{c_from}) to ({r_to},{c_to}). Error: {error}"
+            return error_msg, 1, {error_msg: 1} # Count this unlikely event as 1 invalid move
+    else:
+        fail_msg = "Random agent found no valid moves" # Should only happen if game logic is stuck
+        return fail_msg, 1, {fail_msg: 1} # Count this as 1 invalid move
 
 
-def benchmark_game(config):
+def get_callback(player_config: str, config: dict):
+    """Gets the appropriate move callback based on player configuration."""
+    player_type = player_config.lower()
+    if player_type == "llm":
+        return llm_move_callback
+    elif player_type == "llm_two_step": # Add the new type
+        return llm_two_step_move_callback
+    elif player_type == "random":
+        return random_move_callback
+    # Remove PPO and GUI options as per request
+    # elif player_type == "gui": # GUI is not suitable for automated benchmarking
+    #     return None # Or raise error
+    else:
+        raise ValueError(f"Unknown player type for benchmarking: {player_config}")
+
+
+def player_turn(game: TablutGame, callback) -> Tuple[str, bool]:
     """
-    Plays a single game with players determined by config.
-    It tracks the moves, counts of invalid moves, and reasons behind invalid moves per turn.
+    Executes one turn for the current player using the provided callback.
+    Returns the final message, count of invalid LLM attempts, reasons for those attempts,
+    and whether the move was successfully executed by the game engine.
+    """
+    if callback is None:
+        return "No callback provided for player.", False
+
+    # Store state before move attempt
+    initial_move_count = game.move_count
+    initial_player = game.current_player
+    initial_board_state = game._board_to_string() # For more robust check
+
+    # Get result from callback (which now includes invalid attempt info)
+    msg, invalid_count, reasons = callback(game)
+
+    # Check if the game state actually advanced
+    # A move is executed if the player changes, move count increases, or board state changes
+    move_executed = (game.current_player != initial_player) or \
+                    (game.move_count > initial_move_count) or \
+                    (game._board_to_string() != initial_board_state) or \
+                    game.is_game_over()
+
+    # Ensure the callback for random player also conforms (returns 0, {} for invalid count/reasons)
+    # We might need to adjust random_move_callback if it doesn't return a tuple.
+    # Let's assume for now callbacks ALWAYS return (str, int, dict)
+
+    return msg, invalid_count, reasons, move_executed
+
+
+def benchmark_game(config: dict):
+    """
+    Plays a single game between two configured players without GUI.
+    Tracks moves and failures.
     """
     game = TablutGame()
     white_config = config["white_player"]
     black_config = config["black_player"]
-    white_callback = get_callback(white_config, Player.WHITE, config)
-    black_callback = get_callback(black_config, Player.BLACK, config)
+
+    try:
+        white_callback = get_callback(white_config, config)
+        black_callback = get_callback(black_config, config)
+    except ValueError as e:
+        print(f"Configuration error: {e}")
+        return {"error": str(e)}
+
     game.set_move_callback(white_callback, Player.WHITE)
     game.set_move_callback(black_callback, Player.BLACK)
-    game_result = {"turns": [], "total_invalid_moves": 0, "invalid_reasons": {}}
 
-    while not game.is_game_over():
-        if game.current_player == Player.WHITE:
-            msg, invalid_count, reasons = player_turn(game, game.white_move_callback)
-        else:
-            msg, invalid_count, reasons = player_turn(game, game.black_move_callback)
-        
-        print(f"Move executed: {msg} with {invalid_count} invalid moves")
-        turn_info = {"move": msg, "invalid_moves": invalid_count, "reasons": reasons}
+    game_result = {
+        "turns": [],
+        "total_moves": 0,
+        "winner": "Unknown",
+        "reason": "Game incomplete"
+    }
+
+    MAX_TURNS = config.get("max_benchmark_turns", 100) # Add safety break
+
+    while not game.is_game_over() and game.move_count < MAX_TURNS:
+        current_player = game.current_player
+        callback = game.white_move_callback if current_player == Player.WHITE else game.black_move_callback
+
+        if callback is None: # Should be caught by get_callback, but safety check
+             print(f"Error: No callback set for {current_player.value}")
+             game_result["error"] = f"Callback missing for {current_player.value}"
+             break
+
+        msg, invalid_count, reasons, move_executed = player_turn(game, callback)
+
+        # turn_info = {"player": current_player.value, "message": msg, "executed": move_executed}
+        # Log in the desired format
+        turn_info = {
+            "player": current_player.value,
+            "move": msg, # Use the final message from the callback
+            "invalid_moves": invalid_count,
+            "reasons": reasons
+        }
         game_result["turns"].append(turn_info)
-        game_result["total_invalid_moves"] += invalid_count
-        for reason, count in reasons.items():
-            game_result["invalid_reasons"][reason] = game_result["invalid_reasons"].get(reason, 0) + count
+
+        print(f"Turn {game.move_count+1} ({current_player.value}): {msg} (Internal Invalid: {invalid_count}, Executed: {move_executed})")
+
+        if not move_executed:
+            # Decide how to handle failure: stop the game or force a random move?
+            # For benchmarking, stopping might be better to measure reliability.
+            print(f"Player {current_player.value} failed to execute a move. Ending game.")
+            game_result["reason"] = f"{current_player.value} failed to execute a valid move."
+            break # Stop game on failure
 
     game_result["total_moves"] = game.move_count
     winner = game.get_winner()
-    if winner == Player.WHITE:
-        winning_player_type = white_config
-    elif winner == Player.BLACK:
-        winning_player_type = black_config
-    else:
-        winning_player_type = "Draw"
-    game_result["winner"] = winning_player_type
+
+    if game.is_game_over():
+         if winner == Player.WHITE:
+             game_result["winner"] = white_config # Store the configured player type
+         elif winner == Player.BLACK:
+             game_result["winner"] = black_config
+         elif winner is None: # Draw condition
+             game_result["winner"] = "Draw"
+
+         # Determine reason for game end more accurately
+         if game.move_count >= TablutGame.MOVE_LIMIT: # Use class constant
+             game_result["reason"] = f"Draw - Move limit ({TablutGame.MOVE_LIMIT} moves) reached"
+         elif game.is_king_captured():
+             game_result["reason"] = "Black wins - King captured"
+         elif game.has_king_escaped():
+              game_result["reason"] = "White wins - King escaped"
+         # Need to check state repetition and no valid moves from TablutGame if possible
+         # elif game.state_count.get(game._board_to_string(), 0) >= 3: # Assuming state_count accessible
+         #      game_result["reason"] = "Draw - Repeated position"
+         # elif not game._has_any_valid_moves(game.current_player): # Assuming method accessible
+         #      loser = game.current_player
+         #      winning_player = Player.BLACK if loser == Player.WHITE else Player.WHITE
+         #      game_result["reason"] = f"{winning_player.value} wins - {loser.value} has no valid moves"
+         else:
+              # Default if other conditions met but specific reason unclear from benchmark script
+              game_result["reason"] = f"Game ended. Winner: {game_result['winner']}"
+    elif game.move_count >= MAX_TURNS:
+        game_result["reason"] = f"Game stopped - Max benchmark turns ({MAX_TURNS}) reached."
+        game_result["winner"] = "Incomplete"
+
     return game_result
 
 
@@ -173,54 +184,110 @@ def main():
     with open("config.yaml", "r") as f:
         config = yaml.safe_load(f)
 
-    num_games = config["num_games"]
-    white_config = config["white_player"]
-    black_config = config["black_player"]
-    eval_type = config["eval_type"]
+    # Ensure required benchmark config keys exist
+    num_games = config.get("num_games", 1) # Default to 1 game if not specified
+    white_config = config.get("white_player", "random")
+    black_config = config.get("black_player", "llm_two_step")
+    eval_type = config.get("eval_type", "test") # For log folder naming
+
+    # Check if specified player types are valid for benchmarking
+    try:
+        get_callback(white_config, config)
+        get_callback(black_config, config)
+    except ValueError as e:
+        print(f"Error in config.yaml player types: {e}")
+        return
+
     save_dir = os.path.join("logs", "benchmark", f"w_{white_config}_vs_b_{black_config}_{eval_type}")
     os.makedirs(save_dir, exist_ok=True)
 
-    # Find the highest existing game number
+    # Find the highest existing game number to continue benchmarking runs
     existing_games = [f for f in os.listdir(save_dir) if f.startswith("game_") and f.endswith(".json")]
     start_game_num = 0
     if existing_games:
-        highest_num = max(int(f.split("_")[1].split(".")[0]) for f in existing_games)
-        start_game_num = highest_num
+        try:
+            highest_num = max(int(f.split("_")[1].split(".")[0]) for f in existing_games)
+            start_game_num = highest_num
+        except (ValueError, IndexError):
+             print("Warning: Could not parse existing game numbers. Starting from 0.")
+             start_game_num = 0
 
-    all_games = []
+    all_game_results = []
     total_invalid_moves = 0
     all_invalid_reasons = {}
-    llm_wins = 0
+    wins = {white_config: 0, black_config: 0, "Draw": 0, "Incomplete": 0, "Unknown": 0} # Track wins by configured type
+
+    print(f"Starting benchmark: {white_config} (White) vs {black_config} (Black)")
+    print(f"Running {num_games} games. Saving results to: {save_dir}")
+    print(f"Starting from game number {start_game_num + 1}")
 
     for i in range(num_games):
         current_game_num = start_game_num + i + 1
-        print(f"Starting game {current_game_num}...")
+        print(f"\n--- Starting game {current_game_num} ---")
         game_result = benchmark_game(config)
-        all_games.append(game_result)
-        total_invalid_moves += game_result["total_invalid_moves"]
-        for reason, count in game_result["invalid_reasons"].items():
-            all_invalid_reasons[reason] = all_invalid_reasons.get(reason, 0) + count
-        if game_result["winner"].lower() == "llm":
-            llm_wins += 1
+        all_game_results.append(game_result)
 
-        # Save individual game result in the new folder
+        # Update aggregate stats from turn data
+        for turn in game_result.get("turns", []):
+            total_invalid_moves += turn.get("invalid_moves", 0)
+            for reason, count in turn.get("reasons", {}).items():
+                all_invalid_reasons[reason] = all_invalid_reasons.get(reason, 0) + count
+
+        winner_type = game_result.get("winner", "Unknown")
+        if winner_type in wins:
+             wins[winner_type] += 1
+        else:
+             # Handle case where winner might be 'llm' but config was 'llm_two_step' etc.
+             # This simple version assumes winner matches config key directly.
+             wins["Unknown"] += 1
+
+
+        # Save individual game result
         game_log_file = os.path.join(save_dir, f"game_{current_game_num}.json")
-        with open(game_log_file, "w") as f:
-            json.dump(game_result, f, indent=2)
-        print(f"Game {current_game_num} completed: winner - {game_result['winner']}, moves - {game_result['total_moves']}, invalid moves - {game_result['total_invalid_moves']}")
+        try:
+            with open(game_log_file, "w") as f:
+                json.dump(game_result, f, indent=2)
+            print(f"Game {current_game_num} completed: Winner - {game_result.get('winner', 'N/A')}, Reason - {game_result.get('reason', 'N/A')}, Moves - {game_result.get('total_moves', 0)}")
+        except TypeError as e:
+             print(f"Error saving game {current_game_num} log: {e}. Result was: {game_result}")
 
-    aggregate = {
-        "total_games": num_games,
-        "total_invalid_moves": total_invalid_moves,
-        "average_invalid_moves": total_invalid_moves / num_games if num_games > 0 else 0,
-        "invalid_reasons": all_invalid_reasons,
-        "llm_win_rate": (llm_wins / num_games) * 100,
-        "games": all_games
+
+    # Calculate aggregate statistics
+    total_games_run = len(all_game_results)
+    win_rates = {player: (count / total_games_run) * 100 if total_games_run > 0 else 0
+                 for player, count in wins.items()}
+
+    aggregate_summary = {
+        "config": {
+            "white_player": white_config,
+            "black_player": black_config,
+            "num_games_requested": num_games,
+            "eval_type": eval_type,
+            "provider_settings": config.get(config.get('provider', 'ollama')), # Log LLM settings used
+        },
+        "results": {
+            "total_games_completed": total_games_run,
+            "wins": wins,
+            "win_rates_percent": win_rates,
+            "total_internal_invalid_moves": total_invalid_moves,
+            "average_internal_invalid_moves": total_invalid_moves / total_games_run if total_games_run > 0 else 0,
+            "internal_invalid_reasons": all_invalid_reasons,
+        },
+        # Optionally include all game details, but can make the summary file large
+        # "games": all_game_results
     }
+
     summary_log_file = os.path.join(save_dir, "benchmark_summary.json")
     with open(summary_log_file, "w") as f:
-        json.dump(aggregate, f, indent=2)
-    print(f"Benchmark completed for {num_games} games. Summary written to {summary_log_file}")
+        json.dump(aggregate_summary, f, indent=2)
+
+    print(f"\n--- Benchmark Summary ---")
+    print(f"Saved to: {summary_log_file}")
+    print(f"Total Games Run: {total_games_run}")
+    print(f"Win Counts: {wins}")
+    print(f"Win Rates (%): { {p: f'{r:.2f}' for p, r in win_rates.items()} }")
+    print(f"Total Internal Invalid Moves (across all turns): {total_invalid_moves}")
+    print(f"Avg Internal Invalid Moves per Game: {aggregate_summary['results']['average_internal_invalid_moves']:.2f}")
 
 
 if __name__ == "__main__":

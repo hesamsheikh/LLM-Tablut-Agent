@@ -16,12 +16,12 @@ remote:
   use_few_shot: true # Add few-shot examples to the system prompt
 
 # configuration for player types and PPO settings
-white_player: "llm"  # Options: 'llm', 'ppo', or 'gui'
-black_player: "random"  # Options: 'llm', 'ppo', or 'gui'
-ppo_model_path: "model\\ppo_white_20250407_225550\\tablut_ppo_white_wr97_ep2700.pth"
-ppo_temperature: 0.1
-ppo_use_cpu: false
+white_player: "random"  # Options: 'llm', 'llm_two_step', 'random'
+black_player: "llm_two_step"  # Options: 'llm', 'llm_two_step', 'random'
+# ppo_model_path: "model\\ppo_white_20250407_225550\\tablut_ppo_white_wr97_ep2700.pth" # Removed PPO
+# ppo_temperature: 0.1 # Removed PPO
+# ppo_use_cpu: false # Removed PPO
 
 # Benchmark configuration
 num_games: 12
-eval_type: "few_shot" # "few_shot" or "vanilla"
+eval_type: "few_shot" # Descriptive name for the benchmark run

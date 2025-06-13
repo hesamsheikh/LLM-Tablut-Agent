@@ -171,6 +171,49 @@ You are playing as {current_player} (Total moves made: {move_count}).
 Analyze the board carefully and respond with your move in JSON format.
 """
 
+# New prompts for two-step move selection
+SELECT_PIECE_PROMPT = """{opponent_move}
+Current board state:
+
+{board_str}
+
+You are playing as {current_player} (Total moves made: {move_count}).
+Your task is to select which piece to move.
+
+Here are the pieces you can currently move (represented by their [row, col] coordinates):
+<VALID_SOURCES>
+{valid_sources_str}
+</VALID_SOURCES>
+
+Analyze the board and the available pieces. Choose the piece you want to move.
+Respond ONLY with a JSON object containing the coordinates of the piece you choose:
+{{
+    "selected_piece": [row, col],
+    "reasoning": "Explain why you chose this piece."
+}}
+"""
+
+SELECT_DESTINATION_PROMPT = """You previously selected the piece at {selected_piece_pos}.
+Current board state:
+
+{board_str}
+
+You are playing as {current_player} (Total moves made: {move_count}).
+Your task is to select where to move the piece from {selected_piece_pos}.
+
+Here are the valid destinations for the piece at {selected_piece_pos} (represented by their [row, col] coordinates):
+<VALID_DESTINATIONS>
+{valid_destinations_str}
+</VALID_DESTINATIONS>
+
+Analyze the board and the available destinations for your chosen piece. Choose the destination square.
+Respond ONLY with a JSON object containing the coordinates of the destination square:
+{{
+    "selected_destination": [row, col],
+    "reasoning": "Explain why you chose this destination."
+}}
+"""
+
 def format_move_prompt(board_str, current_player, move_count, opponent_move=""):
     """Format the move prompt with current game state.
     
