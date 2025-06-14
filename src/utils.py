@@ -7,12 +7,12 @@ import random, os
 
 class Piece(Enum):
     EMPTY = "."
-    BLACK = "B"  # Black soldier
-    WHITE = "W"  # White soldier 
+    BLACK = "B"  # black soldier
+    WHITE = "W"  # white soldier 
     KING = "K"
     CASTLE = "C"
     ESCAPE = "*"
-    CAMP = "#"  # Added camp piece type
+    CAMP = "#"  # camp piece type
 
 class Player(Enum):
     BLACK = "Black"
@@ -22,41 +22,41 @@ class PlayerType(Enum):
     GUI = "gui"
     HEURISTIC = "heuristic" 
     LLM = "llm"
-    RL = "reinforcement_learning"  # Added RL player type
+    RL = "reinforcement_learning"  # for RL player type
 
 class GameVisualizer:
-    """Class to handle game visualization separate from game logic"""
+    """handles drawing the game separate from the actual game logic"""
     
     def __init__(self):
-        # Define colors
-        self.PIECE_WHITE = (188, 213, 245)  # Light blue
-        self.PIECE_BLACK = (2, 3, 37)       # Navy blue
-        self.CAMP_TILE = (41, 95, 131)      # Steel blue
-        self.CASTLE_TILE = (121, 111, 58)   # Olive
-        self.ESCAPE_TILE = (202, 101, 143)  # Rose pink
-        self.KING_COLOR = (255, 215, 0)     # Gold
-        self.SELECTED_OUTLINE = (37, 199, 158)  # Turquoise
-        self.VALID_MOVE_MARKER = (23, 88, 74)  # Forest green
-        self.INLINE_COLOR = (50, 50, 50)    # Charcoal
-        self.EMPTY_TILE = (84, 136, 172)    # Sky blue
+        # color scheme for the pieces and board
+        self.PIECE_WHITE = (188, 213, 245)  # light blue
+        self.PIECE_BLACK = (2, 3, 37)       # navy blue
+        self.CAMP_TILE = (41, 95, 131)      # steel blue
+        self.CASTLE_TILE = (121, 111, 58)   # olive
+        self.ESCAPE_TILE = (202, 101, 143)  # rose pink
+        self.KING_COLOR = (255, 215, 0)     # gold
+        self.SELECTED_OUTLINE = (37, 199, 158)  # turquoise
+        self.VALID_MOVE_MARKER = (23, 88, 74)  # forest green
+        self.INLINE_COLOR = (50, 50, 50)    # charcoal
+        self.EMPTY_TILE = (84, 136, 172)    # sky blue
         
-        # Define board dimensions and piece sizes
-        self.BOARD_SIZE = 801
+        # board size and piece dimensions
+        self.BOARD_SIZE = 702
         self.GRID_CELLS = 9
         self.CELL_SIZE = self.BOARD_SIZE // self.GRID_CELLS
         self.PIECE_RADIUS = 30
         self.HIGHLIGHT_RADIUS = self.PIECE_RADIUS
         self.MOVE_MARKER_RADIUS = 10
         
-        # Add font color for game over messages
-        self.TEXT_COLOR = (255, 255, 255)  # White text
-        self.GAME_OVER_BG = (0, 0, 0)      # Black background
+        # colors for game over messages
+        self.TEXT_COLOR = (255, 255, 255)  # white text
+        self.GAME_OVER_BG = (0, 0, 0)      # black background
 
     def draw_game_state(self, screen, game_state, selected_piece=None, valid_moves=None):
-        """Draw the current game state on the screen"""
+        """draw the current state of the game on screen"""
         screen.fill(self.EMPTY_TILE)
 
-        # Draw special tiles
+        # draw the special board tiles first
         for row, col in game_state.BLACK_POSITIONS:
             pygame.draw.rect(screen, self.CAMP_TILE,
                           (col * self.CELL_SIZE, row * self.CELL_SIZE, self.CELL_SIZE, self.CELL_SIZE))
@@ -73,7 +73,7 @@ class GameVisualizer:
             pygame.draw.rect(screen, self.CAMP_TILE,
                           (col * self.CELL_SIZE, row * self.CELL_SIZE, self.CELL_SIZE, self.CELL_SIZE))
                           
-        # Draw pieces
+        # now draw all the pieces
         for row in range(self.GRID_CELLS):
             for col in range(self.GRID_CELLS):
                 piece = game_state.board[row][col]
@@ -81,7 +81,7 @@ class GameVisualizer:
                 center_y = row * self.CELL_SIZE + self.CELL_SIZE//2
                 
                 if piece != Piece.EMPTY and piece != Piece.CAMP and piece != Piece.ESCAPE and piece != Piece.CASTLE:
-                    color = self.PIECE_BLACK  # Default black
+                    color = self.PIECE_BLACK  # default to black
                     if piece == Piece.WHITE:
                         color = self.PIECE_WHITE
                     elif piece == Piece.KING:
@@ -89,7 +89,7 @@ class GameVisualizer:
                     
                     pygame.draw.circle(screen, color, (center_x, center_y), self.PIECE_RADIUS)
         
-        # Highlight selected piece and valid moves
+        # highlight selected piece and show valid moves
         if selected_piece:
             row, col = selected_piece
             center_x = col * self.CELL_SIZE + self.CELL_SIZE//2
@@ -102,7 +102,7 @@ class GameVisualizer:
                     center_y = move_row * self.CELL_SIZE + self.CELL_SIZE//2
                     pygame.draw.circle(screen, self.VALID_MOVE_MARKER, (center_x, center_y), self.MOVE_MARKER_RADIUS)
         
-        # Draw grid lines
+        # draw the grid lines over everything
         for i in range(self.GRID_CELLS):
             pygame.draw.line(screen, self.INLINE_COLOR, 
                            (i * self.CELL_SIZE, 0), 
@@ -113,14 +113,14 @@ class GameVisualizer:
 
 
     def run(self, game_state, white_player_type=PlayerType.GUI, black_player_type=PlayerType.GUI, is_visualization=False):
-        """Main game loop with flexible GUI control for each player"""
+        """main game loop - handles both GUI and AI players"""
         pygame.init()
         WINDOW_SIZE = self.BOARD_SIZE
         screen = pygame.display.set_mode((WINDOW_SIZE, WINDOW_SIZE))
         pygame.display.set_caption("Tablut")
         clock = pygame.time.Clock()
         
-        # Initialize font for game over message
+        # set up font for game over message
         font = pygame.font.Font(None, 36)
 
         running = True
@@ -133,12 +133,12 @@ class GameVisualizer:
             current_player_gui = (white_player_type == PlayerType.GUI if game_state.current_player == Player.WHITE 
                                else black_player_type == PlayerType.GUI)
             
-            # Handle pygame events
+            # handle pygame events
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     running = False
                     
-                # Only process mouse events if current player uses GUI and game is not over
+                # only process mouse clicks if current player uses GUI and game isn't over
                 if event.type == pygame.MOUSEBUTTONDOWN and not game_over and current_player_gui:
                     mouse_x, mouse_y = pygame.mouse.get_pos()
                     col = mouse_x // (WINDOW_SIZE // 9)
@@ -155,18 +155,18 @@ class GameVisualizer:
                     else:
                         if (row, col) in valid_moves:
                             success, reason = game_state.move_piece(selected_piece[0], selected_piece[1], row, col)
-                            if success and reason:  # If game ended with a reason
+                            if success and reason:  # if game ended with a reason
                                 game_over = True
                                 game_over_reason = reason
                         selected_piece = None
                         valid_moves = []
             
-            # Handle non-GUI player moves
+            # handle AI/LLM player moves
             if not game_over and not current_player_gui:
                 game_state.notify_move_needed()
                 if game_state.is_game_over():
                     game_over = True
-                    # Determine reason for game end
+                    # figure out why the game ended
                     if game_state.move_count >= game_state.MOVE_LIMIT:
                         game_over_reason = f"Draw - Move limit ({game_state.MOVE_LIMIT} moves) reached"
                     elif game_state.is_king_captured():
@@ -178,20 +178,20 @@ class GameVisualizer:
                     elif game_state.state_count.get(game_state._board_to_string(), 0) >= 3:
                         game_over_reason = "Draw - Repeated position"
             
-            # Draw the game state
+            # draw everything
             self.draw_game_state(screen, game_state, 
                                selected_piece if current_player_gui else None,
                                valid_moves if current_player_gui else None)
             
-            # Draw game over message if game is over
+            # show game over message if needed
             if game_over and game_over_reason:
-                # Create semi-transparent overlay
+                # create a semi-transparent overlay
                 overlay = pygame.Surface((WINDOW_SIZE, 100))
                 overlay.fill(self.GAME_OVER_BG)
                 overlay.set_alpha(200)
                 screen.blit(overlay, (0, WINDOW_SIZE // 2 - 50))
                 
-                # Render game over message
+                # show the game over message
                 winner = game_state.get_winner()
                 if winner:
                     text = f"Game Over! Winner: {winner.value}"
@@ -201,18 +201,18 @@ class GameVisualizer:
                 screen.blit(text_surface, (WINDOW_SIZE // 2 - text_surface.get_width() // 2, 
                                          WINDOW_SIZE // 2 - 40))
                 
-                # Render reason
+                # show reason
                 reason_surface = font.render(game_over_reason, True, self.TEXT_COLOR)
                 screen.blit(reason_surface, (WINDOW_SIZE // 2 - reason_surface.get_width() // 2, 
                                            WINDOW_SIZE // 2))
             
             pygame.display.flip()
             
-            # Frame rate control
+            # frame rate control
             if is_visualization:
-                clock.tick(10)  # Slower for visualization
+                clock.tick(10)  # slower for visualization
             else:
-                clock.tick(60)  # Faster for training/evaluation
+                clock.tick(60)  # faster for training/evaluation
 
         pygame.quit()
 
@@ -222,8 +222,8 @@ class ArchiveManager:
         self.game_states = []
 
     def add_game_state(self, board: List[List[Piece]], player: Player, move_from: Tuple[int, int], move_to: Tuple[int, int]):
-        """Add a game state to the archive"""
-        # Convert board enum values to strings for JSON serialization
+        """save a game state to our archive"""
+        # convert board enum values to strings so we can save them as JSON
         board_state = [[piece.value for piece in row] for row in board]
         
         state = {
@@ -234,8 +234,8 @@ class ArchiveManager:
         }
         self.game_states.append(state)
     def save_game(self, winner: Optional[Player], is_draw: bool = False, description: str = ""):
-        """Save the complete game to a JSON file"""
-        # Convert any numpy int64 values to regular Python ints
+        """save the complete game to a JSON file"""
+        # convert any numpy int64 values to regular Python ints
         game_states = []
         for state in self.game_states:
             converted_state = {
@@ -254,16 +254,16 @@ class ArchiveManager:
             "game_states": game_states
         }
 
-        # Create filename with game info
+        # create filename with game info
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         result = "draw" if is_draw else f"{winner.value}" if winner else "incomplete"
         moves = int(len(self.game_states))
         filename = f"{result}_{moves}_{timestamp}.json"
 
-        # Create logs directory if it doesn't exist
+        # make sure logs directory exists
         os.makedirs('logs', exist_ok=True)
         
-        # Save file in logs directory
+        # save file in logs directory
         filepath = os.path.join('logs', filename)
         with open(filepath, 'w') as f:
             json.dump(game_data, f, indent=4)
@@ -272,7 +272,7 @@ class ArchiveManager:
 
     @staticmethod
     def load_game(filename: str) -> Dict:
-        """Load a game from a JSON file"""
+        """load a game from a JSON file"""
         try:
             filepath = os.path.join('logs', filename)
             with open(filepath, 'r') as f:

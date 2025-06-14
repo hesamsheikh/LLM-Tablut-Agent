@@ -11,9 +11,7 @@ from src.utils import Piece
 
 
 def random_move_callback(game: TablutGame) -> str:
-    """Callback for a random valid move.
-    Returns a tuple: (message, invalid_count, reasons)
-    """
+    """callback for a random player that just picks any valid move"""
     current_player = game.current_player
     valid_moves = []
     piece_types = (Piece.WHITE, Piece.KING) if current_player == Player.WHITE else (Piece.BLACK,)
@@ -23,7 +21,7 @@ def random_move_callback(game: TablutGame) -> str:
             if game.board[r][c] in piece_types:
                 moves = game.get_valid_moves(r, c)
                 for move in moves:
-                    valid_moves.append(((r, c), move)) # Store as ((r_from, c_from), (r_to, c_to))
+                    valid_moves.append(((r, c), move)) # store as ((r_from, c_from), (r_to, c_to))
 
     if valid_moves:
         chosen_move = random.choice(valid_moves)
@@ -32,65 +30,65 @@ def random_move_callback(game: TablutGame) -> str:
         if success:
             return f"Random agent moved from ({r_from},{c_from}) to ({r_to},{c_to})", 0, {}
         else:
-            # Should ideally not happen if get_valid_moves is correct
+            # this really shouldn't happen if get_valid_moves is working right
             error_msg = f"Random agent attempted invalid move from ({r_from},{c_from}) to ({r_to},{c_to}). Error: {error}"
-            return error_msg, 1, {error_msg: 1} # Count this unlikely event as 1 invalid move
+            return error_msg, 1, {error_msg: 1} # count this unlikely event as 1 invalid move
     else:
-        fail_msg = "Random agent found no valid moves" # Should only happen if game logic is stuck
-        return fail_msg, 1, {fail_msg: 1} # Count this as 1 invalid move
+        fail_msg = "Random agent found no valid moves" # should only happen if game logic is stuck
+        return fail_msg, 1, {fail_msg: 1} # count this as 1 invalid move
 
 
 def get_callback(player_config: str, config: dict):
-    """Gets the appropriate move callback based on player configuration."""
+    """figure out which move callback to use based on player configuration"""
     player_type = player_config.lower()
     if player_type == "llm":
         return llm_move_callback
-    elif player_type == "llm_two_step": # Add the new type
+    elif player_type == "llm_two_step": # the new two-step type
         return llm_two_step_move_callback
     elif player_type == "random":
         return random_move_callback
-    # Remove PPO and GUI options as per request
+    # removed PPO and GUI options as per request
     # elif player_type == "gui": # GUI is not suitable for automated benchmarking
-    #     return None # Or raise error
+    #     return None # or raise error
     else:
         raise ValueError(f"Unknown player type for benchmarking: {player_config}")
 
 
 def player_turn(game: TablutGame, callback) -> Tuple[str, bool]:
     """
-    Executes one turn for the current player using the provided callback.
-    Returns the final message, count of invalid LLM attempts, reasons for those attempts,
-    and whether the move was successfully executed by the game engine.
+    runs one turn for the current player using the provided callback
+    returns the final message, count of invalid LLM attempts, reasons for those attempts,
+    and whether the move was actually executed by the game engine
     """
     if callback is None:
         return "No callback provided for player.", False
 
-    # Store state before move attempt
+    # remember the state before trying to move
     initial_move_count = game.move_count
     initial_player = game.current_player
-    initial_board_state = game._board_to_string() # For more robust check
+    initial_board_state = game._board_to_string() # for more robust checking
 
-    # Get result from callback (which now includes invalid attempt info)
+    # get result from callback (which now includes invalid attempt info)
     msg, invalid_count, reasons = callback(game)
 
-    # Check if the game state actually advanced
-    # A move is executed if the player changes, move count increases, or board state changes
+    # check if the game state actually changed
+    # a move is executed if the player changes, move count increases, or board state changes
     move_executed = (game.current_player != initial_player) or \
                     (game.move_count > initial_move_count) or \
                     (game._board_to_string() != initial_board_state) or \
                     game.is_game_over()
 
-    # Ensure the callback for random player also conforms (returns 0, {} for invalid count/reasons)
-    # We might need to adjust random_move_callback if it doesn't return a tuple.
-    # Let's assume for now callbacks ALWAYS return (str, int, dict)
+    # make sure the callback for random player also conforms (returns 0, {} for invalid count/reasons)
+    # we might need to adjust random_move_callback if it doesn't return a tuple
+    # let's assume for now callbacks ALWAYS return (str, int, dict)
 
     return msg, invalid_count, reasons, move_executed
 
 
 def benchmark_game(config: dict):
     """
-    Plays a single game between two configured players without GUI.
-    Tracks moves and failures.
+    runs a single game between two configured players without GUI
+    keeps track of moves and failures
     """
     game = TablutGame()
     white_config = config["white_player"]
@@ -113,13 +111,13 @@ def benchmark_game(config: dict):
         "reason": "Game incomplete"
     }
 
-    MAX_TURNS = config.get("max_benchmark_turns", 100) # Add safety break
+    MAX_TURNS = config.get("max_benchmark_turns", 100) # safety break
 
     while not game.is_game_over() and game.move_count < MAX_TURNS:
         current_player = game.current_player
         callback = game.white_move_callback if current_player == Player.WHITE else game.black_move_callback
 
-        if callback is None: # Should be caught by get_callback, but safety check
+        if callback is None: # should be caught by get_callback, but safety check
              print(f"Error: No callback set for {current_player.value}")
              game_result["error"] = f"Callback missing for {current_player.value}"
              break
@@ -127,10 +125,10 @@ def benchmark_game(config: dict):
         msg, invalid_count, reasons, move_executed = player_turn(game, callback)
 
         # turn_info = {"player": current_player.value, "message": msg, "executed": move_executed}
-        # Log in the desired format
+        # log in the desired format
         turn_info = {
             "player": current_player.value,
-            "move": msg, # Use the final message from the callback
+            "move": msg, # use the final message from the callback
             "invalid_moves": invalid_count,
             "reasons": reasons
         }
@@ -139,39 +137,39 @@ def benchmark_game(config: dict):
         print(f"Turn {game.move_count+1} ({current_player.value}): {msg} (Internal Invalid: {invalid_count}, Executed: {move_executed})")
 
         if not move_executed:
-            # Decide how to handle failure: stop the game or force a random move?
-            # For benchmarking, stopping might be better to measure reliability.
+            # decide how to handle failure: stop the game or force a random move?
+            # for benchmarking, stopping might be better to measure reliability
             print(f"Player {current_player.value} failed to execute a move. Ending game.")
             game_result["reason"] = f"{current_player.value} failed to execute a valid move."
-            break # Stop game on failure
+            break # stop game on failure
 
     game_result["total_moves"] = game.move_count
     winner = game.get_winner()
 
     if game.is_game_over():
          if winner == Player.WHITE:
-             game_result["winner"] = white_config # Store the configured player type
+             game_result["winner"] = white_config # store the configured player type
          elif winner == Player.BLACK:
              game_result["winner"] = black_config
-         elif winner is None: # Draw condition
+         elif winner is None: # draw condition
              game_result["winner"] = "Draw"
 
-         # Determine reason for game end more accurately
-         if game.move_count >= TablutGame.MOVE_LIMIT: # Use class constant
+         # figure out the reason for game end more accurately
+         if game.move_count >= TablutGame.MOVE_LIMIT: # use class constant
              game_result["reason"] = f"Draw - Move limit ({TablutGame.MOVE_LIMIT} moves) reached"
          elif game.is_king_captured():
              game_result["reason"] = "Black wins - King captured"
          elif game.has_king_escaped():
               game_result["reason"] = "White wins - King escaped"
-         # Need to check state repetition and no valid moves from TablutGame if possible
-         # elif game.state_count.get(game._board_to_string(), 0) >= 3: # Assuming state_count accessible
+         # need to check state repetition and no valid moves from TablutGame if possible
+         # elif game.state_count.get(game._board_to_string(), 0) >= 3: # assuming state_count accessible
          #      game_result["reason"] = "Draw - Repeated position"
-         # elif not game._has_any_valid_moves(game.current_player): # Assuming method accessible
+         # elif not game._has_any_valid_moves(game.current_player): # assuming method accessible
          #      loser = game.current_player
          #      winning_player = Player.BLACK if loser == Player.WHITE else Player.WHITE
          #      game_result["reason"] = f"{winning_player.value} wins - {loser.value} has no valid moves"
          else:
-              # Default if other conditions met but specific reason unclear from benchmark script
+              # default if other conditions met but specific reason unclear from benchmark script
               game_result["reason"] = f"Game ended. Winner: {game_result['winner']}"
     elif game.move_count >= MAX_TURNS:
         game_result["reason"] = f"Game stopped - Max benchmark turns ({MAX_TURNS}) reached."
@@ -184,13 +182,13 @@ def main():
     with open("config.yaml", "r") as f:
         config = yaml.safe_load(f)
 
-    # Ensure required benchmark config keys exist
-    num_games = config.get("num_games", 1) # Default to 1 game if not specified
+    # make sure required benchmark config keys exist
+    num_games = config.get("num_games", 1) # default to 1 game if not specified
     white_config = config.get("white_player", "random")
     black_config = config.get("black_player", "llm_two_step")
-    eval_type = config.get("eval_type", "test") # For log folder naming
+    eval_type = config.get("eval_type", "test") # for log folder naming
 
-    # Check if specified player types are valid for benchmarking
+    # check if specified player types are valid for benchmarking
     try:
         get_callback(white_config, config)
         get_callback(black_config, config)

@@ -1,6 +1,6 @@
 """
-Prompts for the Tablut LLM player.
-Contains system prompt for game rules and move prompt for requesting moves.
+prompts for the Tablut LLM player.
+has the system prompt for game rules and move prompt for requesting moves.
 """
 
 # Few-shot examples

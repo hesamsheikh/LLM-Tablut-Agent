@@ -10,27 +10,27 @@ from src.tablut import TablutGame, Player
 from src.prompts import SYSTEM_PROMPT, MOVE_PROMPT, FEW_SHOT_WHITE_WIN, FEW_SHOT_BLACK_WIN
 from src.utils import GameVisualizer, PlayerType
 
-# Load environment variables and configuration
+# load up our environment stuff and config
 load_dotenv()
 with open("config.yaml", "r") as f:
     config = yaml.safe_load(f)
 
 
 class LLMPlayer:
-    """Encapsulates interaction with an LLM service to determine moves in Tablut."""
+    """this handles talking to the LLM to figure out moves in tablut"""
     def __init__(self, model_name: str = "gemma3:1b", temperature: float = 0.7, top_p: float = 0.3) -> None:
         self.model = model_name
         self.temperature = temperature
         self.top_p = top_p
         
-        # Determine if few-shot examples should be used based on config
+        # check if we should use few-shot examples from the config
         provider_config = config.get(config.get('provider', 'ollama'), {})
         use_few_shot = provider_config.get('use_few_shot', False)
         
         current_system_prompt = SYSTEM_PROMPT
         few_shot_examples = ""
         if use_few_shot:
-            # Prepend examples to the base system prompt
+            # stick the examples before the main prompt
             few_shot_examples = f"{FEW_SHOT_WHITE_WIN}\n{FEW_SHOT_BLACK_WIN}\n"
         current_system_prompt = current_system_prompt.replace("{FEW_SHOT_EXAMPLES}", few_shot_examples)
 
@@ -39,16 +39,16 @@ class LLMPlayer:
         self.reset()
 
     def reset(self) -> None:
-        """Resets the player's state, including message history and game instance."""
+        """clears everything - message history and game instance"""
         self.game = None
         self.message_history = [{"role": "system", "content": self.system_prompt}]
 
     def set_game(self, game: TablutGame) -> None:
-        """Associate a TablutGame instance with this LLMPlayer."""
+        """link up a game instance with this player"""
         self.game = game
 
     def _format_board_with_tags(self, raw_board_str: str) -> str:
-        """Formats the raw board output into a tagged, human-readable format."""
+        """makes the board output look nice with proper formatting and tags"""
         lines = raw_board_str.strip().split('\n')
         header = "   0 1 2 3 4 5 6 7 8"
         separator = "  +-------------------+"
@@ -60,7 +60,7 @@ class LLMPlayer:
         return '\n'.join(formatted)
 
     def _board_to_prompt(self, opponent_move_str: str = "") -> str:
-        """Creates a prompt from the current board state and optional opponent move."""
+        """builds a prompt from the current board and what the opponent just did"""
         raw_board = self.game._board_to_string()
         formatted_board = self._format_board_with_tags(raw_board)
         current_player = self.game.current_player.value
@@ -73,7 +73,7 @@ class LLMPlayer:
         )
 
     def _extract_json_from_response(self, response_text: str) -> str:
-        """Extracts JSON from a response, removing markdown code block wrappers if present."""
+        """pulls out the JSON from the LLM response, gets rid of markdown wrapper stuff"""
         if "```json" in response_text:
             start = response_text.find("```json") + 7
             end = response_text.find("```", start)
@@ -82,7 +82,7 @@ class LLMPlayer:
         return response_text.strip()
 
     def _prepare_prompt(self) -> str:
-        """Prepares the LLM prompt using the current board state and previous opponent move."""
+        """gets the prompt ready using current board state and what the other player just did"""
         opponent = Player.BLACK if self.game.current_player == Player.WHITE else Player.WHITE
         opponent_move = self.game.get_last_move(opponent)
         opponent_str = ""
@@ -99,7 +99,7 @@ class LLMPlayer:
         return prompt
 
     def _call_llm(self) -> Optional[str]:
-        """Calls the LLM service and returns the response content."""
+        """actually calls the LLM service and gets back the response"""
         try:
             if config.get('provider') == 'ollama':
                 response = ollama.chat(
@@ -134,7 +134,7 @@ class LLMPlayer:
             return None
 
     def _parse_move_data(self, response_content: str) -> Optional[Tuple[Tuple[int, int], Tuple[int, int], str]]:
-        """Parses the JSON response from the LLM to extract move coordinates and reasoning."""
+        """takes the JSON response from the LLM and pulls out the move coordinates and reasoning"""
         try:
             move_data = json.loads(response_content)
             from_pos = move_data['move']['from']
@@ -147,7 +147,7 @@ class LLMPlayer:
             return None
 
     def get_move(self) -> Optional[Tuple[Tuple[int, int], Tuple[int, int]]]:
-        """Gets the move from the LLM by preparing the prompt, calling the service, and parsing the response."""
+        """this is the main function - gets a move from the LLM by preparing the prompt, calling the service, and parsing what comes back"""
         if not self.game:
             raise ValueError("Game not set. Call set_game() first.")
         self._prepare_prompt()
@@ -169,19 +169,19 @@ class LLMPlayer:
 
 
 def llm_move_callback(game: TablutGame) -> str:
-    """Callback for LLM moves. Creates a new LLMPlayer instance if needed and executes the move."""
-    # Create a new player instance if this is the first move
+    """callback for LLM moves - creates a new player instance if we need one and makes the move"""
+    # make a new player instance if this is the first move
     if not hasattr(game, 'llm_white') and game.current_player == Player.WHITE:
         game.llm_white = LLMPlayer()
     elif not hasattr(game, 'llm_black') and game.current_player == Player.BLACK:
         game.llm_black = LLMPlayer()
 
-    # Get the appropriate player
+    # grab the right player
     player = game.llm_white if game.current_player == Player.WHITE else game.llm_black
 
-    # Set game and ensure initial board state is available
+    # hook up the game and make sure we have the initial board state
     player.set_game(game)
-    if len(player.message_history) == 1:  # Only system prompt exists
+    if len(player.message_history) == 1:  # only system prompt exists
         prompt = player._board_to_prompt()
         player.message_history.append({"role": "user", "content": prompt})
 
@@ -204,7 +204,7 @@ def llm_move_callback(game: TablutGame) -> str:
 
 
 def play_game(llm_color: str = "BLACK", model_name: str = "gemma3:4b", temperature: float = 0.7, top_p: float = 0.3) -> None:
-    """Starts a game with LLM on one side and GUI on the other."""
+    """starts a game with the LLM playing against a human (GUI)"""
     game = TablutGame()
     target = Player.WHITE if llm_color.upper() == "WHITE" else Player.BLACK
     game.set_move_callback(llm_move_callback, target)
@@ -220,7 +220,7 @@ def play_game_llm_vs_ppo(llm_side: str = "BLACK",
                           ppo_model_path: str = r"model\ppo_white_20250407_225550\tablut_ppo_white_wr97_ep2700.pth",
                           ppo_temperature: float = 0.1,
                           ppo_use_cpu: bool = False) -> None:
-    """Starts a game with LLM on one side and a PPO agent on the other."""
+    """pit the LLM against a trained PPO agent - should be interesting!"""
     import torch
     from ppo_trainer import TablutPPONetwork, TablutEnv, get_valid_action_mask
 
@@ -275,12 +275,12 @@ def play_game_llm_vs_ppo(llm_side: str = "BLACK",
 
 
 def play_game_configurable() -> None:
-    """Starts a game based on config settings for 'white_player' and 'black_player'. Allowed values: 'llm', 'ppo' (or 'rl'), 'gui'."""
+    """starts a game based on whatever you put in the config file - pretty flexible"""
     game = TablutGame()
     white_conf = config.get('white_player', 'llm').lower()
     black_conf = config.get('black_player', 'gui').lower()
 
-    # Setup PPO if necessary
+    # setup PPO stuff if we need it
     ppo_used = white_conf in ['ppo', 'rl'] or black_conf in ['ppo', 'rl']
     ppo_model = None
     if ppo_used:

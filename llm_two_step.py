@@ -10,7 +10,7 @@ from src.tablut import TablutGame, Player
 from src.prompts import SYSTEM_PROMPT, SELECT_PIECE_PROMPT, SELECT_DESTINATION_PROMPT, FEW_SHOT_WHITE_WIN, FEW_SHOT_BLACK_WIN
 from src.utils import GameVisualizer, PlayerType, Piece
 
-# Load environment variables and configuration
+# load up our environment and config
 load_dotenv()
 with open("config.yaml", "r") as f:
     config = yaml.safe_load(f)
@@ -18,7 +18,7 @@ with open("config.yaml", "r") as f:
 MAX_LLM_RETRIES = 3
 
 class LLMTwoStepPlayer:
-    """Encapsulates a two-step interaction with an LLM service to determine moves in Tablut."""
+    """handles two-step interaction with LLM - first pick the piece, then pick where to move it"""
     def __init__(self, model_name: Optional[str] = None, temperature: Optional[float] = None, top_p: Optional[float] = None) -> None:
         provider = config.get('provider', 'ollama')
         provider_config = config.get(provider, {})
@@ -40,31 +40,31 @@ class LLMTwoStepPlayer:
         self.reset()
 
     def reset(self) -> None:
-        """Resets the player's state, including message history and game instance."""
+        """clears everything and starts fresh"""
         self.game = None
         self.message_history = [{"role": "system", "content": self.system_prompt}]
         self.selected_piece_pos: Optional[Tuple[int, int]] = None
 
     def set_game(self, game: TablutGame) -> None:
-        """Associate a TablutGame instance with this LLMPlayer."""
+        """hooks up a game instance"""
         self.game = game
 
     def _format_board_with_tags(self, raw_board_str: str) -> str:
-        """Formats the raw board output into a tagged, human-readable format."""
+        """makes the board look nice with proper formatting"""
         lines = raw_board_str.strip().split('\n')
         header = "   0 1 2 3 4 5 6 7 8"
         separator = "  +-------------------+"
         formatted = ["<BOARD>", header, separator]
         for idx, line in enumerate(lines):
-            # Assuming board string uses piece values directly (e.g., 'W', 'B', 'K')
-            formatted_line = f"{idx} | {' '.join(line)} |" # Adjust based on _board_to_string format
+            # board string should have piece values directly
+            formatted_line = f"{idx} | {' '.join(line)} |" # adjust based on _board_to_string format
             formatted.append(formatted_line)
-        formatted.append(separator) # Add bottom separator
+        formatted.append(separator) # add bottom separator
         formatted.append("</BOARD>")
         return '\n'.join(formatted)
 
     def _get_opponent_move_str(self) -> str:
-        """Gets the string representation of the opponent's last move."""
+        """figures out what the opponent just did so we can tell the LLM"""
         opponent = Player.BLACK if self.game.current_player == Player.WHITE else Player.WHITE
         opponent_move = self.game.get_last_move(opponent)
         opponent_str = ""
@@ -78,7 +78,7 @@ class LLMTwoStepPlayer:
         return opponent_str + "\n" if opponent_str else ""
 
     def _get_valid_sources(self) -> Dict[Tuple[int, int], List[Tuple[int, int]]]:
-        """Gets all valid source positions and their corresponding destinations for the current player."""
+        """find all pieces we can move and where they can go"""
         valid_sources = {}
         current_p = self.game.current_player
         piece_types = (Piece.WHITE, Piece.KING) if current_p == Player.WHITE else (Piece.BLACK,)
@@ -92,7 +92,7 @@ class LLMTwoStepPlayer:
         return valid_sources
 
     def _prepare_select_piece_prompt(self, valid_sources: List[Tuple[int, int]]) -> str:
-        """Prepares the prompt for selecting a piece."""
+        """builds the prompt for asking the LLM which piece to move"""
         raw_board = self.game._board_to_string()
         formatted_board = self._format_board_with_tags(raw_board)
         opponent_move_str = self._get_opponent_move_str()
@@ -108,7 +108,7 @@ class LLMTwoStepPlayer:
         return prompt
 
     def _prepare_select_destination_prompt(self, selected_piece: Tuple[int, int], valid_destinations: List[Tuple[int, int]]) -> str:
-        """Prepares the prompt for selecting a destination."""
+        """builds the prompt for asking where to move the chosen piece"""
         raw_board = self.game._board_to_string()
         formatted_board = self._format_board_with_tags(raw_board)
         valid_destinations_str = "\n".join([f"- [{r},{c}]" for r, c in valid_destinations])
@@ -123,48 +123,48 @@ class LLMTwoStepPlayer:
         return prompt
 
     def _extract_json_from_response(self, response_text: str) -> str:
-        """Extracts JSON from a response, removing markdown code block wrappers if present."""
-        # First, try finding the ```json ``` block
+        """pulls JSON out of the LLM response, dealing with markdown wrapper nonsense"""
+        # first, try finding the ```json ``` block
         try:
             if "```json" in response_text:
                 start = response_text.find("```json") + 7
                 end = response_text.find("```", start)
                 if end != -1:
                     potential_json = response_text[start:end].strip()
-                    # Attempt to validate if it's actually JSON
+                    # make sure it's actually valid JSON
                     json.loads(potential_json)
-                    return potential_json # Return only if it parses
+                    return potential_json # return only if it parses
         except json.JSONDecodeError:
-            # If ``` block exists but content isn't valid JSON, fall through
+            # if ``` block exists but content isn't valid JSON, keep trying
             pass
-        except Exception: # Catch other potential errors during ``` processing
+        except Exception: # catch other potential errors during ``` processing
              pass
 
-        # If no valid ```json block, try finding the outermost {}
+        # if no valid ```json block, try finding the outermost {}
         try:
-            # Strip leading/trailing whitespace that might interfere
+            # strip whitespace that might mess things up
             stripped_text = response_text.strip()
             start = stripped_text.find('{')
             end = stripped_text.rfind('}')
             if start != -1 and end != -1 and end > start:
                 potential_json = stripped_text[start:end+1]
-                # Attempt to validate if it's actually JSON
+                # make sure it's actually valid JSON
                 json.loads(potential_json)
-                return potential_json # Return only if it parses
+                return potential_json # return only if it parses
         except json.JSONDecodeError:
-             # If {} found but content isn't valid JSON, fall through
+             # if {} found but content isn't valid JSON, keep going
             pass
-        except Exception: # Catch other potential errors during {} processing
+        except Exception: # catch other potential errors during {} processing
             pass
 
-        # Fallback: return the original stripped text if no valid JSON structure found
-        # This might allow the calling function's error handling to catch it
+        # fallback: return the original stripped text if we can't find valid JSON
+        # this might allow the calling function's error handling to catch it
         print(f"Warning: Could not extract valid JSON from response: {response_text}")
         return response_text.strip()
 
 
     def _call_llm(self, prompt: str, step_history: List[Dict[str, str]]) -> Optional[str]:
-        """Calls the LLM service with the current prompt and step-specific history."""
+        """actually calls the LLM with our prompt and history"""
         messages = self.message_history + step_history + [{"role": "user", "content": prompt}]
         try:
             if config.get('provider') == 'ollama':
@@ -197,21 +197,20 @@ class LLMTwoStepPlayer:
                 raise ValueError(f"Unknown provider: {config.get('provider')}")
         except Exception as ex:
             print(f"Error calling LLM: {ex}")
-            # print(f"Messages sent: {json.dumps(messages, indent=2)}") # Debugging
-            return None
+            # print(f"Messages sent: {json.dumps(messages, indent=2)}") # debugging
 
     def _parse_select_piece_response(self, response_content: str) -> Optional[Tuple[Tuple[int, int], str]]:
-        """Parses the JSON response for selected piece."""
-        data = None # Initialize data to None for error logging
+        """tries to parse the piece selection response from the LLM"""
+        data = None # keep data around for error logging
         try:
             # response_content comes from _extract_json_from_response
-            data = json.loads(response_content) # <--- If response_content is not valid JSON, this raises JSONDecodeError
+            data = json.loads(response_content) # if response_content is not valid JSON, this blows up
             if not isinstance(data, dict):
                  print(f"Error parsing piece selection: Expected a JSON object (dict), got {type(data)}")
                  print(f"Raw response content passed to json.loads: {response_content}")
                  return None
 
-            piece_pos_list = data['selected_piece'] # <--- This raises KeyError if 'selected_piece' is not in data dict
+            piece_pos_list = data['selected_piece'] # this throws KeyError if 'selected_piece' is missing
             piece_pos = tuple(piece_pos_list)
             reasoning = data.get('reasoning', 'No reasoning provided.')
 
@@ -229,15 +228,15 @@ class LLMTwoStepPlayer:
              print(f"Parsed data: {data}")
              print(f"Raw response content: {response_content}")
              return None
-        except (TypeError, IndexError) as ex: # Catch issues like trying tuple() on non-iterable or accessing index
+        except (TypeError, IndexError) as ex: # catch issues like trying tuple() on non-iterable or accessing index
             print(f"Error processing parsed piece selection data: {ex}")
             print(f"Parsed data: {data}")
             print(f"Raw response content: {response_content}")
             return None
 
     def _parse_select_destination_response(self, response_content: str) -> Optional[Tuple[Tuple[int, int], str]]:
-        """Parses the JSON response for selected destination."""
-        data = None # Initialize data to None for error logging
+        """tries to parse the destination selection response from the LLM"""
+        data = None # keep data around for error logging
         try:
             # response_content comes from _extract_json_from_response
             data = json.loads(response_content)
@@ -246,7 +245,7 @@ class LLMTwoStepPlayer:
                  print(f"Raw response content passed to json.loads: {response_content}")
                  return None
 
-            dest_pos_list = data['selected_destination'] # <--- KeyError possible here
+            dest_pos_list = data['selected_destination'] # KeyError possible here
             dest_pos = tuple(dest_pos_list)
             reasoning = data.get('reasoning', 'No reasoning provided.')
 
@@ -272,26 +271,24 @@ class LLMTwoStepPlayer:
 
 
     def get_move(self) -> Optional[Tuple[Tuple[int, int], Tuple[int, int]]]:
-        """Gets the move from the LLM using a two-step process: select piece, then select destination.
-        Returns the selected move (from_pos, to_pos), the count of invalid attempts during the process,
-        and a dictionary of reasons for those attempts.
-        Returns (None, invalid_count, reasons) if it fails to produce a valid move.
+        """the main function - gets a move using two steps: first pick the piece, then pick where to move it
+        this is more reliable than trying to get both decisions at once
         """
         if not self.game:
             raise ValueError("Game not set. Call set_game() first.")
 
-        # Initialize tracking for invalid attempts within this turn
+        # keep track of any invalid attempts during this turn
         invalid_count = 0
         reasons = {}
 
         valid_sources_map = self._get_valid_sources()
         if not valid_sources_map:
             print("LLM Player: No valid source pieces found.")
-            return None, invalid_count, reasons # No possible moves
+            return None, invalid_count, reasons # no possible moves
 
         valid_source_coords = list(valid_sources_map.keys())
 
-        # --- Step 1: Select Piece ---
+        # step 1: select piece
         selected_piece = None
         piece_reasoning = ""
         piece_history = []
@@ -306,56 +303,56 @@ class LLMTwoStepPlayer:
                 reasons["LLM call failed (piece selection)"] = reasons.get("LLM call failed (piece selection)", 0) + 1
                 continue
 
-            # Use the potentially improved parser
+            # try to parse what the LLM gave us
             parsed = self._parse_select_piece_response(response_content)
             if parsed:
                 piece_pos, piece_reasoning = parsed
                 if piece_pos in valid_source_coords:
                     selected_piece = piece_pos
-                    # Add successful interaction to step history
+                    # add successful interaction to step history
                     piece_history.append({"role": "user", "content": prompt})
-                    piece_history.append({"role": "assistant", "content": response_content}) # Log raw response associated with success
+                    piece_history.append({"role": "assistant", "content": response_content}) # log raw response associated with success
                     print(f"LLM selected piece: {selected_piece} (Attempt {attempt+1})")
-                    # print(f"Reasoning: {piece_reasoning}") # Optional: Reduce noise?
-                    break # Valid piece selected
+                    # print(f"Reasoning: {piece_reasoning}") # optional: reduce noise?
+                    break # valid piece selected
                 else:
                     error_msg = f"Invalid piece selected: {piece_pos}. It's not in the list of valid pieces: {valid_source_coords}."
                     print(f"LLM Error (Piece Selection Attempt {attempt+1}/{MAX_LLM_RETRIES}): {error_msg}")
                     piece_history.append({"role": "user", "content": prompt})
-                    # Log the raw response that led to the error
+                    # log the raw response that led to the error
                     piece_history.append({"role": "assistant", "content": response_content})
-                    piece_history.append({"role": "user", "content": f"Error: {error_msg} Please choose a piece from the valid list provided."}) # Ask for correction
+                    piece_history.append({"role": "user", "content": f"Error: {error_msg} Please choose a piece from the valid list provided."}) # ask for correction
                     invalid_count += 1
                     reasons[error_msg] = reasons.get(error_msg, 0) + 1
             else:
-                 # Parsing failed, _parse_select_piece_response already printed details
+                 # parsing failed, _parse_select_piece_response already printed details
                  error_msg = "Failed to parse LLM response or validate data for piece selection."
                  print(f"LLM Error (Piece Selection Attempt {attempt+1}/{MAX_LLM_RETRIES}): {error_msg}")
                  piece_history.append({"role": "user", "content": prompt})
-                 # Log the raw response that led to the error
+                 # log the raw response that led to the error
                  piece_history.append({"role": "assistant", "content": response_content})
-                 piece_history.append({"role": "user", "content": f"Error: {error_msg} Please respond ONLY with the specified JSON format containing 'selected_piece' and 'reasoning'."}) # Ask for correction
+                 piece_history.append({"role": "user", "content": f"Error: {error_msg} Please respond ONLY with the specified JSON format containing 'selected_piece' and 'reasoning'."}) # ask for correction
                  invalid_count += 1
                  reasons[error_msg] = reasons.get(error_msg, 0) + 1
 
         if selected_piece is None:
             print("LLM failed to select a valid piece after multiple attempts.")
-            # Persist the failed interaction history
+            # persist the failed interaction history
             self.message_history.extend(piece_history)
-            return None, invalid_count, reasons # Return failure along with attempts info
+            return None, invalid_count, reasons # return failure along with attempts info
 
-        # Persist the successful piece selection interaction history
+        # persist the successful piece selection interaction history
         self.message_history.extend(piece_history)
-        self.selected_piece_pos = selected_piece # Store selected piece for potential future reference if needed
+        self.selected_piece_pos = selected_piece # store selected piece for potential future reference if needed
 
-        # --- Step 2: Select Destination ---
+        # step 2: select destination
         valid_destinations = valid_sources_map[selected_piece]
         selected_destination = None
         dest_reasoning = ""
-        dest_history = [] # Separate history for this step, building on the main history
+        dest_history = [] # separate history for this step, building on the main history
         for attempt in range(MAX_LLM_RETRIES):
             prompt = self._prepare_select_destination_prompt(selected_piece, valid_destinations)
-            response_content = self._call_llm(prompt, dest_history) # Use dest_history here
+            response_content = self._call_llm(prompt, dest_history) # use dest_history here
             if response_content is None:
                 dest_history.append({"role": "user", "content": prompt})
                 dest_history.append({"role": "assistant", "content": "{\"error\": \"LLM call failed.\"}"})
@@ -364,82 +361,80 @@ class LLMTwoStepPlayer:
                 reasons["LLM call failed (destination selection)"] = reasons.get("LLM call failed (destination selection)", 0) + 1
                 continue
 
-            # Use the potentially improved parser
+            # try to parse what the LLM gave us
             parsed = self._parse_select_destination_response(response_content)
             if parsed:
                 dest_pos, dest_reasoning = parsed
                 if dest_pos in valid_destinations:
                     selected_destination = dest_pos
-                    # Add successful interaction to step history
+                    # add successful interaction to step history
                     dest_history.append({"role": "user", "content": prompt})
-                    # Log raw response associated with success
+                    # log raw response associated with success
                     dest_history.append({"role": "assistant", "content": response_content})
                     print(f"LLM selected destination: {selected_destination} (Attempt {attempt+1})")
-                    # print(f"Reasoning: {dest_reasoning}") # Optional: Reduce noise?
-                    break # Valid destination selected
+                    # print(f"Reasoning: {dest_reasoning}") # optional: reduce noise?
+                    break # valid destination selected
                 else:
                     error_msg = f"Invalid destination selected: {dest_pos}. It's not in the list of valid destinations for piece {selected_piece}: {valid_destinations}."
                     print(f"LLM Error (Destination Selection Attempt {attempt+1}/{MAX_LLM_RETRIES}): {error_msg}")
                     dest_history.append({"role": "user", "content": prompt})
-                    # Log the raw response that led to the error
+                    # log the raw response that led to the error
                     dest_history.append({"role": "assistant", "content": response_content})
-                    dest_history.append({"role": "user", "content": f"Error: {error_msg} Please choose a destination from the valid list provided."}) # Ask for correction
+                    dest_history.append({"role": "user", "content": f"Error: {error_msg} Please choose a destination from the valid list provided."}) # ask for correction
                     invalid_count += 1
                     reasons[error_msg] = reasons.get(error_msg, 0) + 1
             else:
-                # Parsing failed, _parse_select_destination_response already printed details
+                # parsing failed, _parse_select_destination_response already printed details
                 error_msg = "Failed to parse LLM response or validate data for destination selection."
                 print(f"LLM Error (Destination Selection Attempt {attempt+1}/{MAX_LLM_RETRIES}): {error_msg}")
                 dest_history.append({"role": "user", "content": prompt})
-                # Log the raw response that led to the error
+                # log the raw response that led to the error
                 dest_history.append({"role": "assistant", "content": response_content})
-                dest_history.append({"role": "user", "content": f"Error: {error_msg} Please respond ONLY with the specified JSON format containing 'selected_destination' and 'reasoning'."}) # Ask for correction
+                dest_history.append({"role": "user", "content": f"Error: {error_msg} Please respond ONLY with the specified JSON format containing 'selected_destination' and 'reasoning'."}) # ask for correction
                 invalid_count += 1
                 reasons[error_msg] = reasons.get(error_msg, 0) + 1
 
         if selected_destination is None:
             print("LLM failed to select a valid destination after multiple attempts.")
-            # Persist the failed destination interaction history
+            # persist the failed destination interaction history
             self.message_history.extend(dest_history)
-            return None, invalid_count, reasons # Return failure along with attempts info
+            return None, invalid_count, reasons # return failure along with attempts info
 
-        # Persist the successful destination selection interaction history
+        # persist the successful destination selection interaction history
         self.message_history.extend(dest_history)
-        return (selected_piece, selected_destination), invalid_count, reasons # Return success move with attempts info
+        return (selected_piece, selected_destination), invalid_count, reasons # return success move with attempts info
 
 
 def llm_two_step_move_callback(game: TablutGame) -> str:
-    """Callback for two-step LLM moves. Creates/uses LLMTwoStepPlayer and executes the move.
-    Returns a tuple: (message, invalid_count, reasons)
-    """
+    """callback for two-step LLM moves - creates the player if we need one and makes the move"""
     player_attr = f'llm_two_step_{game.current_player.value.lower()}'
 
-    # Create a new player instance if it doesn't exist for this player
+    # make a new player instance if it doesn't exist for this player
     if not hasattr(game, player_attr):
         setattr(game, player_attr, LLMTwoStepPlayer())
 
-    # Get the appropriate player instance
+    # get the right player instance
     player = getattr(game, player_attr)
 
-    # Set game state for the player
+    # hook up the game state for the player
     player.set_game(game)
 
-    # Ensure system prompt is the first message if history was reset or it's the first turn
+    # make sure system prompt is the first message if history was reset or it's the first turn
     if not player.message_history or player.message_history[0]['role'] != 'system':
-         player.reset() # Resets history with system prompt
-         player.set_game(game) # Re-associate game
+         player.reset() # resets history with system prompt
+         player.set_game(game) # re-associate game
 
     move_result, invalid_count, reasons = player.get_move()
 
     if move_result is None:
-        # LLM failed to provide a valid move after retries in get_move
-        # The get_move method already prints detailed errors.
+        # LLM couldn't give us a valid move after trying several times
+        # the get_move method already prints detailed errors
         fail_message = "LLM failed to provide a valid move after multiple attempts in two-step process (check logs for details)."
-        # Avoid adding duplicate error messages if get_move already added failure info
+        # avoid adding duplicate error messages if get_move already added failure info
         if not player.message_history or "failed" not in player.message_history[-1].get("content", "").lower():
-             player.message_history.append({"role": "user", "content": "Requesting move."}) # Placeholder for the request attempt
+             player.message_history.append({"role": "user", "content": "Requesting move."}) # placeholder for the request attempt
              player.message_history.append({"role": "assistant", "content": f'{{\"error\": \"{fail_message}\"}}'})
-        # Return the failure message along with the accumulated invalid counts and reasons
+        # return the failure message along with the accumulated invalid counts and reasons
         return fail_message, invalid_count, reasons
 
     from_pos, to_pos = move_result
@@ -448,32 +443,32 @@ def llm_two_step_move_callback(game: TablutGame) -> str:
     success, error = game.move_piece(from_row, from_col, to_row, to_col)
 
     if success:
-        # Clear selected piece after successful move? Might not be necessary if get_move handles state correctly.
+        # everything worked - clean up if needed
         # player.selected_piece_pos = None
         success_message = f"LLM-2Step moved from ({from_row},{from_col}) to ({to_row},{to_col})"
         return success_message, invalid_count, reasons
     else:
-        # This case *shouldn't* happen often if get_move validates correctly against game.get_valid_moves,
-        # but maybe some edge case in game.move_piece logic or concurrent state change? Unlikely here.
-        error_msg = f"LLM-2Step final move rejected: from ({from_row},{from_col}) to ({to_row},{to_col}). Error: {error}" # More specific message
-        # Log this final critical failure exactly as requested.
-        # Need the player *whose turn it was* when the move was attempted.
-        # Since move_piece failed, current_player HAS NOT changed yet.
+        # this shouldn't happen often if get_move validates correctly against game.get_valid_moves,
+        # but maybe some edge case in game.move_piece logic or concurrent state change? unlikely here
+        error_msg = f"LLM-2Step final move rejected: from ({from_row},{from_col}) to ({to_row},{to_col}). Error: {error}" # more specific message
+        # log this final critical failure exactly as requested
+        # need the player *whose turn it was* when the move was attempted
+        # since move_piece failed, current_player HAS NOT changed yet
         player_who_attempted = game.current_player
-        # Construct the reason key in the requested format
+        # construct the reason key in the requested format
         final_error_reason = f"{player_who_attempted.value} attempted invalid move from ({from_row},{from_col}) to ({to_row},{to_col})"
         reasons[final_error_reason] = reasons.get(final_error_reason, 0) + 1
-        invalid_count += 1 # Count this final failure
-        # Add error context to LLM history for its next turn
+        invalid_count += 1 # count this final failure
+        # add error context to LLM history for its next turn
         player.message_history.append({
             "role": "user",
             "content": f"The move you chose ({from_pos} -> {to_pos}) was ultimately invalid according to the game rules. Error: {error}. Please analyze the rules and board state again for your next turn."
         })
         return error_msg, invalid_count, reasons
 
-# Example of how to run a game (optional, primarily for testing)
+# example of how to run a game (optional, primarily for testing)
 # def play_game_llm_vs_gui(llm_color: str = "BLACK") -> None:
-#     """Starts a game with LLM (Two-Step) on one side and GUI on the other."""
+#     """starts a game with LLM (Two-Step) on one side and GUI on the other"""
 #     game = TablutGame()
 #     target = Player.WHITE if llm_color.upper() == "WHITE" else Player.BLACK
 #     game.set_move_callback(llm_two_step_move_callback, target)
@@ -486,5 +481,5 @@ def llm_two_step_move_callback(game: TablutGame) -> str:
 
 
 # if __name__ == "__main__":
-#     # Example: LLM plays as Black against GUI White
+#     # example: LLM plays as Black against GUI White
 #     play_game_llm_vs_gui(llm_color="BLACK") 
